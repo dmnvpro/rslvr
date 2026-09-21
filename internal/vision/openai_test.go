@@ -136,6 +136,79 @@ func TestAnalyze_Auth401(t *testing.T) {
 	}
 }
 
+// OpenRouter error bodies carry a numeric code and provider details in
+// metadata; both must surface instead of failing to unmarshal.
+func TestAnalyze_UpstreamErrorNumericCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, `{"error":{"code":400,"message":"Provider returned error","metadata":{"raw":"context length exceeded","provider_name":"openai"}}}`)
+	}))
+	defer srv.Close()
+
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	if !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v, want ErrUpstream", err)
+	}
+	msg := err.Error()
+	for _, want := range []string{"status 400", "Provider returned error", "code 400", "context length exceeded"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q must contain %q", msg, want)
+		}
+	}
+}
+
+func TestAnalyze_NumericCode401IsAuth(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":{"code":401,"message":"No auth credentials found"}}`)
+	}))
+	defer srv.Close()
+
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	if !errors.Is(err, ErrAuth) {
+		t.Fatalf("err = %v, want ErrAuth", err)
+	}
+}
+
+func TestAnalyze_GarbageBodyIncludesSnippet(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		io.WriteString(w, `<html>proxy exploded</html>`)
+	}))
+	defer srv.Close()
+
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	if !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v, want ErrUpstream", err)
+	}
+	if !strings.Contains(err.Error(), "proxy exploded") {
+		t.Errorf("error %q must include the body snippet", err)
+	}
+}
+
+func TestErrorCode_UnmarshalJSON(t *testing.T) {
+	cases := []struct {
+		in   string
+		want errorCode
+	}{
+		{`"invalid_api_key"`, "invalid_api_key"},
+		{`400`, "400"},
+		{`null`, ""},
+	}
+	for _, c := range cases {
+		var got struct {
+			Code errorCode `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(`{"code":`+c.in+`}`), &got); err != nil {
+			t.Errorf("unmarshal %s: %v", c.in, err)
+			continue
+		}
+		if got.Code != c.want {
+			t.Errorf("code for %s = %q, want %q", c.in, got.Code, c.want)
+		}
+	}
+}
+
 func TestAnalyze_NoAPIKey(t *testing.T) {
 	o := clientOpts("http://unused")
 	o.APIKey = ""

@@ -105,9 +105,33 @@ type chatResponse struct {
 }
 
 type errorBody struct {
-	Message string `json:"message"`
-	Type    string `json:"type"`
-	Code    string `json:"code"`
+	Message  string          `json:"message"`
+	Type     string          `json:"type"`
+	Code     errorCode       `json:"code"`
+	Metadata json.RawMessage `json:"metadata,omitempty"`
+}
+
+// errorCode tolerates both OpenAI-style string codes ("invalid_api_key") and
+// OpenRouter-style numeric ones (400) in the same field; the raw JSON token
+// is kept as text.
+type errorCode string
+
+func (c *errorCode) UnmarshalJSON(b []byte) error {
+	b = bytes.TrimSpace(b)
+	if len(b) == 0 || string(b) == "null" {
+		*c = ""
+		return nil
+	}
+	if b[0] == '"' {
+		var s string
+		if err := json.Unmarshal(b, &s); err != nil {
+			return err
+		}
+		*c = errorCode(s)
+		return nil
+	}
+	*c = errorCode(b)
+	return nil
 }
 
 // Analyze posts one frame to /chat/completions and extracts the answer.
@@ -151,7 +175,8 @@ func (c *OpenAI) Analyze(ctx context.Context, img []byte, mime string) (Result, 
 
 	var cr chatResponse
 	if err := json.Unmarshal(body, &cr); err != nil {
-		return Result{}, fmt.Errorf("%w: status %d, malformed body: %w", ErrUpstream, resp.StatusCode, err)
+		return Result{}, fmt.Errorf("%w: status %d, malformed body (%v): %s",
+			ErrUpstream, resp.StatusCode, err, truncate(body, 300))
 	}
 	if cr.Error != nil {
 		return Result{}, c.apiError(resp.StatusCode, cr.Error)
@@ -258,10 +283,19 @@ func (c *OpenAI) post(ctx context.Context, payload []byte) (*http.Response, erro
 }
 
 func (c *OpenAI) apiError(status int, e *errorBody) error {
-	if status == http.StatusUnauthorized || status == http.StatusForbidden || e.Code == "invalid_api_key" {
-		return fmt.Errorf("%w: %s", ErrAuth, e.Message)
+	msg := e.Message
+	if e.Code != "" {
+		msg = fmt.Sprintf("%s (code %s)", msg, e.Code)
 	}
-	return fmt.Errorf("%w: status %d: %s", ErrUpstream, status, e.Message)
+	// OpenRouter reports provider-side failures generically; the details sit
+	// in error.metadata (e.g. metadata.raw), so keep a snippet of it.
+	if len(e.Metadata) > 0 {
+		msg += ": " + truncate(e.Metadata, 300)
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden || e.Code == "invalid_api_key" {
+		return fmt.Errorf("%w: %s", ErrAuth, msg)
+	}
+	return fmt.Errorf("%w: status %d: %s", ErrUpstream, status, msg)
 }
 
 func truncate(b []byte, n int) string {
