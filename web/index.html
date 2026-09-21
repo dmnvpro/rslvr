@@ -234,7 +234,15 @@ async function takeFrame() {
       const e = data.error || {};
       throw Object.assign(new Error(e.message || "HTTP " + resp.status), { code: e.code });
     }
-    pending.push(data);
+    if (!data.image) throw new Error("server returned no frame image");
+    // Normalize to the pending shape: {data, mime, sha256, preview, saved_path}.
+    pending.push({
+      data: data.image,
+      mime: data.mime,
+      sha256: data.sha256,
+      preview: data.preview,
+      saved_path: data.saved_path,
+    });
     renderPending();
     setState("idle");
   } catch (err) {
