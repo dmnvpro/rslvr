@@ -30,6 +30,18 @@ func TestParseDshowDevices_FFMpeg7Fixture(t *testing.T) {
 	}
 }
 
+// ffmpeg 7.x+ drops the "DirectShow video devices" header and rewrites the
+// log prefix to "[in#0 @ ...]"; real 9.0.2 output.
+func TestParseDshowDevices_FFMpeg9Fixture(t *testing.T) {
+	devs := ParseDshowDevices(readFixture(t, "dshow_ffmpeg9.txt"))
+	if len(devs) != 1 || devs[0].Name != "OBS Virtual Camera" {
+		t.Fatalf("devs = %+v, want single OBS Virtual Camera", devs)
+	}
+	if devs[0].Index != 0 || devs[0].ID != devs[0].Name {
+		t.Errorf("devs[0] = %+v", devs[0])
+	}
+}
+
 func TestParseDshowDevices_FFMpeg44Fixture(t *testing.T) {
 	devs := ParseDshowDevices(readFixture(t, "dshow_ffmpeg44.txt"))
 	// Duplicate name must be deduped; audio section must be skipped.

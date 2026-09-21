@@ -7,32 +7,24 @@ import "strings"
 // non-zero on this invocation by design; the caller must ignore the exit code
 // and parse only the output.
 //
-// Output shape (prefix hex width varies across ffmpeg 4.x..7.x):
+// Device entries are recognized by a quoted name followed by a
+// "(video)" / "(audio)" marker. That shape holds across versions, while the
+// surrounding text does not: ffmpeg up to 6.x prints "[dshow @ 0x...]" lines
+// with section headers, 7.x+ prints "[in#0 @ 0x...]" and no headers at all:
 //
 //	[dshow @ 0x7ff...] DirectShow video devices (some may be both audio and video)
 //	[dshow @ 0x7ff...]  "USB2.0 HD UVC WebCam" (video)
 //	[dshow @ 0x7ff...]   Alternative name "@device_pnp_..."
-//	[dshow @ 0x7ff...] DirectShow audio devices
-//	[dshow @ 0x7ff...]  "Microphone" (audio)
+//	[in#0 @ 0x1d3...] "OBS Virtual Camera" (video)
 func ParseDshowDevices(stderr string) []Device {
 	var devs []Device
-	inVideo := false
 	seen := map[string]bool{}
 	for _, raw := range strings.Split(stderr, "\n") {
-		line := stripDshowPrefix(strings.TrimSpace(raw))
-		if line == "" {
+		line := stripLogPrefix(strings.TrimSpace(raw))
+		if line == "" || strings.Contains(strings.ToLower(line), "alternative name") {
 			continue
 		}
-		low := strings.ToLower(line)
-		switch {
-		case strings.Contains(low, "directshow video devices"):
-			inVideo = true
-			continue
-		case strings.Contains(low, "directshow audio devices"):
-			inVideo = false
-			continue
-		}
-		if !inVideo || strings.Contains(low, "alternative name") {
+		if deviceKind(line) != "video" {
 			continue
 		}
 		name := quotedValue(line)
@@ -45,9 +37,27 @@ func ParseDshowDevices(stderr string) []Device {
 	return devs
 }
 
-// stripDshowPrefix removes a leading "[dshow @ 0x...]" marker of any width.
-func stripDshowPrefix(line string) string {
-	if !strings.HasPrefix(line, "[dshow") {
+// deviceKind returns the "(video)" / "(audio)" marker that follows the quoted
+// device name, or "" for non-device lines.
+func deviceKind(line string) string {
+	end := strings.LastIndex(line, `"`)
+	if end < 0 {
+		return ""
+	}
+	switch strings.TrimSpace(line[end+1:]) {
+	case "(video)":
+		return "video"
+	case "(audio)":
+		return "audio"
+	default:
+		return ""
+	}
+}
+
+// stripLogPrefix removes a leading bracketed ffmpeg log prefix of any width,
+// e.g. "[dshow @ 0x7ff...]" or "[in#0 @ 0x1d3...]".
+func stripLogPrefix(line string) string {
+	if !strings.HasPrefix(line, "[") {
 		return line
 	}
 	if i := strings.Index(line, "]"); i >= 0 {
