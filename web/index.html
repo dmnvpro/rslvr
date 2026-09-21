@@ -59,11 +59,13 @@
   .options { list-style: none; margin: 0 0 10px; padding: 0; color: var(--muted); font-size: 13px; }
   .options li { padding: 1px 0; word-break: break-word; }
   .why { margin: 6px 0 0; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
-  #btn-export {
-    padding: 8px 14px; font-size: 13px; font-weight: 600;
+  .btn-minor {
+    padding: 8px 14px; font-size: 13px; font-weight: 600; font-family: inherit;
     color: var(--text); background: var(--card); border: 1px solid var(--line);
-    border-radius: 8px; cursor: pointer;
+    border-radius: 8px; cursor: pointer; transition: border-color .15s, color .15s;
   }
+  .btn-minor:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-minor:active { transform: translateY(1px); }
   .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; color: var(--muted); font-size: 13px; }
   img.preview { max-height: 180px; max-width: 100%; border-radius: 8px; border: 1px solid var(--line); margin-top: 12px; }
   details { margin-top: 10px; }
@@ -139,8 +141,8 @@
     <summary>History (<span id="history-count">0</span>)</summary>
     <div id="history"></div>
     <div class="row">
-      <button id="btn-export">Download history</button>
-      <button id="btn-save-disk">Save to Disk</button>
+      <button id="btn-export" class="btn-minor">Download history</button>
+      <button id="btn-save-disk" class="btn-minor">Save to Disk</button>
       <span id="save-status" class="hint"></span>
     </div>
   </details>
