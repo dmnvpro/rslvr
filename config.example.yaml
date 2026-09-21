@@ -10,8 +10,6 @@ capture:
   backend: "ffmpeg"           # the only implemented backend; anything else is an error
   ffmpeg_path: "ffmpeg"
   device: ""                  # "" = first available; id, index or name substring
-  output_format: "png"        # jpeg | png; png is lossless and reads best
-  jpeg_quality: 85            # 1..100 (jpeg only)
   save_dir: "./shots"         # "" = do not save frame copies
   warmup_ms: 700ms            # pause between device open and frame grab (black-frame fix)
 
@@ -26,14 +24,19 @@ vision:
   max_tokens: 2000            # headroom for question + options + explanation
   detail: "high"              # low | high | auto (image detail, affects cost)
   system_prompt: |
-    You are an assistant that reads text on images. Answer only with the JSON object described by the user.
+    You are an assistant that solves quiz questions shown on images. The frames may contain text as well as
+    tables, diagrams, charts, graphs, schemas, drawings and other graphical elements — read and interpret them all.
+    Answer only with the JSON object described by the user.
   user_prompt: |
-    The frames (Frame 1, Frame 2, ...) show one quiz question that may continue across frames. Read them in order, then read the question text and the answer options.
+    The frames (Frame 1, Frame 2, ...) show one quiz question that may continue across frames. Read them in order,
+    then read the question text and the answer options.
+    The question may include tables, diagrams, charts, graphs, schemas, drawings or other graphics — analyze them
+    as part of the question.
     Reply with a single JSON object and nothing else:
     {"question": "<recognized question text>", "options": ["<option A>", "<option B>", ...],
      "answer": "<letter(s) of the correct option, empty for open questions>",
      "answer_text": "<text of the correct option, or the full free-form answer>",
-     "explanation": "<1-3 sentences: why this answer is correct>"}
+     "explanation": "<detailed reasoning: what the question and its graphics show, the steps that lead to the answer, why the chosen option is correct and the alternatives are not>"}
     If the question has no answer options, set "options" to [] and "answer" to "".
     If the frames are unreadable, reply exactly {"unreadable": true}.
 

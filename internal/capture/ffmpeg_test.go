@@ -35,7 +35,7 @@ func (f *fakeExecer) Run(ctx context.Context, path string, args []string) ([]byt
 func TestGrab_Success(t *testing.T) {
 	frame := testJPEG(t)
 	ex := &fakeExecer{stdout: frame}
-	capt := NewWithExecer(Options{FFmpegPath: "ffmpeg", OutputFormat: "jpeg", JPEGQuality: 85}, ex)
+	capt := NewWithExecer(Options{FFmpegPath: "ffmpeg"}, ex)
 
 	dev := Device{ID: "/dev/video0", Path: "/dev/video0"}
 	got, mime, err := capt.Grab(context.Background(), dev)

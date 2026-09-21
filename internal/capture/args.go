@@ -2,12 +2,13 @@ package capture
 
 import (
 	"fmt"
-	"strings"
 	"time"
 )
 
 // BuildGrabArgs returns the ffmpeg argument list that produces exactly one
 // frame on stdout as image2pipe (no program path — the caller supplies it).
+// Frames are always lossless PNG: the quiz text must survive the capture
+// without JPEG ringing or chroma subsampling.
 //
 // Warmup is the input-side "-ss" placed before -i: on a live, non-seekable
 // input ffmpeg drops frames until the target timestamp, which is exactly the
@@ -24,31 +25,10 @@ func BuildGrabArgs(goos string, dev Device, o Options) []string {
 	}
 	inputFormat, inputPath := deviceInput(goos, dev)
 	args = append(args, "-f", inputFormat, "-i", inputPath)
-	args = append(args, "-frames:v", "1")
-	switch strings.ToLower(o.OutputFormat) {
-	case "png":
-		args = append(args, "-c:v", "png", "-f", "image2pipe")
-	default: // jpeg
-		args = append(args,
-			"-c:v", "mjpeg",
-			"-q:v", fmt.Sprint(QualityToQV(o.JPEGQuality)),
-			"-pix_fmt", "yuvj420p",
-			"-f", "image2pipe",
-		)
-	}
+	args = append(args, "-frames:v", "1",
+		"-c:v", "png", "-f", "image2pipe",
+	)
 	return append(args, "pipe:1")
-}
-
-// QualityToQV maps a 1..100 quality onto ffmpeg's -q:v scale (2 best..31 worst).
-func QualityToQV(quality int) int {
-	q := 31 - quality*29/100
-	if q < 2 {
-		q = 2
-	}
-	if q > 31 {
-		q = 31
-	}
-	return q
 }
 
 // deviceInput returns the libavdevice input format and path for the platform.

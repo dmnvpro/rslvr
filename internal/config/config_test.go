@@ -74,7 +74,6 @@ timeout: 45s
 capture:
   device: "1"
   warmup_ms: 1500ms
-  output_format: png
 vision:
   model: test/model-x
   detail: low
@@ -89,10 +88,10 @@ server:
 	if c.Listen != "0.0.0.0:9999" || c.Timeout != 45*time.Second {
 		t.Errorf("Listen/Timeout = %q/%s", c.Listen, c.Timeout)
 	}
-	if c.Capture.Device != "1" || c.Capture.Warmup != 1500*time.Millisecond || c.Capture.OutputFormat != "png" {
+	if c.Capture.Device != "1" || c.Capture.Warmup != 1500*time.Millisecond {
 		t.Errorf("capture = %+v", c.Capture)
 	}
-	if c.Capture.JPEGQuality != 85 || c.Capture.SaveDir != "./shots" {
+	if c.Capture.SaveDir != "./shots" {
 		t.Errorf("omitted capture keys must keep defaults, got %+v", c.Capture)
 	}
 	if c.Vision.Model != "test/model-x" || c.Vision.Detail != "low" {
@@ -286,8 +285,6 @@ func TestValidate(t *testing.T) {
 		{"gocv", func(c *Config) { c.Capture.Backend = "gocv" }, "not implemented"},
 		{"empty backend", func(c *Config) { c.Capture.Backend = "" }, "empty"},
 		{"unknown backend", func(c *Config) { c.Capture.Backend = "avfoundation" }, "unknown backend"},
-		{"bad format", func(c *Config) { c.Capture.OutputFormat = "bmp" }, "output_format"},
-		{"bad quality", func(c *Config) { c.Capture.JPEGQuality = 0 }, "jpeg_quality"},
 		{"negative warmup", func(c *Config) { c.Capture.Warmup = -1 }, "warmup_ms"},
 		{"empty base_url", func(c *Config) { c.Vision.BaseURL = "" }, "base_url"},
 		{"empty model", func(c *Config) { c.Vision.Model = "" }, "model"},

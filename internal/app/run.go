@@ -85,11 +85,9 @@ func Run(argv []string, stdout, stderr io.Writer) int {
 	defer stop()
 
 	capt := newCapturer(capture.Options{
-		FFmpegPath:   cfg.Capture.FFmpegPath,
-		OutputFormat: cfg.Capture.OutputFormat,
-		JPEGQuality:  cfg.Capture.JPEGQuality,
-		Warmup:       cfg.Capture.Warmup,
-		Log:          logger,
+		FFmpegPath: cfg.Capture.FFmpegPath,
+		Warmup:     cfg.Capture.Warmup,
+		Log:        logger,
 	})
 	defer capt.Close()
 

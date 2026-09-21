@@ -6,11 +6,11 @@ import (
 	"time"
 )
 
-var grabOpts = Options{FFmpegPath: "/usr/bin/ffmpeg", OutputFormat: "jpeg", JPEGQuality: 85}
+var grabOpts = Options{FFmpegPath: "/usr/bin/ffmpeg"}
 
 func TestBuildGrabArgs_LinuxWarmup(t *testing.T) {
 	dev := Device{ID: "/dev/video2", Path: "/dev/video2"}
-	args := BuildGrabArgs("linux", dev, Options{OutputFormat: "jpeg", JPEGQuality: 85, Warmup: 700 * time.Millisecond})
+	args := BuildGrabArgs("linux", dev, Options{Warmup: 700 * time.Millisecond})
 	joined := strings.Join(args, " ")
 
 	if !strings.Contains(joined, "-ss 0.70") {
@@ -49,28 +49,16 @@ func TestBuildGrabArgs_WindowsDshow(t *testing.T) {
 	}
 }
 
-func TestBuildGrabArgs_PNGOmitsQuality(t *testing.T) {
+// Frames are always lossless PNG: no lossy jpeg encoder or quality knobs.
+func TestBuildGrabArgs_AlwaysLosslessPNG(t *testing.T) {
 	args := BuildGrabArgs("linux", Device{Path: "/dev/video0"},
-		Options{OutputFormat: "png", JPEGQuality: 85, Warmup: time.Second})
+		Options{Warmup: time.Second})
 	joined := strings.Join(args, " ")
 	if strings.Contains(joined, "-q:v") || strings.Contains(joined, "mjpeg") {
-		t.Errorf("png output must not carry jpeg encoder flags, got %s", joined)
+		t.Errorf("lossless capture must not carry jpeg encoder flags, got %s", joined)
 	}
 	if !strings.Contains(joined, "-c:v png") {
 		t.Errorf("png encoder missing, got %s", joined)
-	}
-}
-
-func TestQualityToQV_Clamps(t *testing.T) {
-	cases := []struct {
-		quality, want int
-	}{
-		{1, 31}, {50, 17}, {85, 7}, {100, 2}, {0, 31}, {-5, 31}, {200, 2},
-	}
-	for _, c := range cases {
-		if got := QualityToQV(c.quality); got != c.want {
-			t.Errorf("QualityToQV(%d) = %d, want %d", c.quality, got, c.want)
-		}
 	}
 }
 

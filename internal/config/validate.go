@@ -22,14 +22,6 @@ func Validate(cfg *Config) error {
 	if cfg.Capture.FFmpegPath == "" {
 		return errors.New("capture.ffmpeg_path must not be empty")
 	}
-	switch cfg.Capture.OutputFormat {
-	case "jpeg", "png":
-	default:
-		return fmt.Errorf("capture.output_format: %q not supported (want jpeg|png)", cfg.Capture.OutputFormat)
-	}
-	if cfg.Capture.JPEGQuality < 1 || cfg.Capture.JPEGQuality > 100 {
-		return fmt.Errorf("capture.jpeg_quality: %d out of range 1..100", cfg.Capture.JPEGQuality)
-	}
 	if cfg.Capture.Warmup < 0 {
 		return errors.New("capture.warmup_ms must not be negative")
 	}

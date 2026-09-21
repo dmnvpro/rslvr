@@ -11,7 +11,7 @@ A video input visible to the OS — webcam, capture card, or virtual camera. The
 _Avoid_: camera, source, stream
 
 **Frame**:
-A single still image (JPEG/PNG) captured from a Device. The UI calls it a "screenshot"; it is always a device frame, never a screen capture.
+A single still image, always captured losslessly (PNG) from a Device — quiz text must survive capture without compression artifacts. The UI calls it a "screenshot"; it is always a device frame, never a screen capture.
 _Avoid_: screenshot, snapshot, photo
 
 **Frame set**:

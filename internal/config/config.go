@@ -36,13 +36,11 @@ type Config struct {
 
 // Capture configures frame grabbing.
 type Capture struct {
-	Backend      string        `yaml:"backend"` // only "ffmpeg" is implemented
-	FFmpegPath   string        `yaml:"ffmpeg_path"`
-	Device       string        `yaml:"device"` // "" = first available; id, index or name
-	OutputFormat string        `yaml:"output_format"`
-	JPEGQuality  int           `yaml:"jpeg_quality"` // 1..100
-	SaveDir      string        `yaml:"save_dir"`     // "" = do not save frames
-	Warmup       time.Duration `yaml:"warmup_ms"`    // pause between device open and frame grab
+	Backend    string        `yaml:"backend"` // only "ffmpeg" is implemented
+	FFmpegPath string        `yaml:"ffmpeg_path"`
+	Device     string        `yaml:"device"`    // "" = first available; id, index or name
+	SaveDir    string        `yaml:"save_dir"`  // "" = do not save frames
+	Warmup     time.Duration `yaml:"warmup_ms"` // pause between device open and frame grab
 }
 
 // Vision configures the OpenAI-compatible analysis endpoint.
@@ -131,13 +129,11 @@ func Defaults() Config {
 		Listen:  "127.0.0.1:8080",
 		Timeout: 30 * time.Second,
 		Capture: Capture{
-			Backend:      "ffmpeg",
-			FFmpegPath:   "ffmpeg",
-			Device:       "",
-			OutputFormat: "png",
-			JPEGQuality:  85,
-			SaveDir:      "./shots",
-			Warmup:       700 * time.Millisecond,
+			Backend:    "ffmpeg",
+			FFmpegPath: "ffmpeg",
+			Device:     "",
+			SaveDir:    "./shots",
+			Warmup:     700 * time.Millisecond,
 		},
 		Vision: Vision{
 			BaseURL:      "https://openrouter.ai/api/v1",
@@ -148,14 +144,17 @@ func Defaults() Config {
 			RetryBackoff: 800 * time.Millisecond,
 			MaxTokens:    2000,
 			Detail:       "high",
-			SystemPrompt: "You are an assistant that reads text on images. " +
+			SystemPrompt: "You are an assistant that solves quiz questions shown on images. " +
+				"The frames may contain text as well as tables, diagrams, charts, graphs, schemas, " +
+				"drawings and other graphical elements — read and interpret them all. " +
 				"Answer only with the JSON object described by the user.",
 			UserPrompt: `The frames (Frame 1, Frame 2, ...) show one quiz question that may continue across frames. Read them in order, then read the question text and the answer options.
+The question may include tables, diagrams, charts, graphs, schemas, drawings or other graphics — analyze them as part of the question.
 Reply with a single JSON object and nothing else:
 {"question": "<recognized question text>", "options": ["<option A>", "<option B>", ...],
  "answer": "<letter(s) of the correct option, empty for open questions>",
  "answer_text": "<text of the correct option, or the full free-form answer>",
- "explanation": "<1-3 sentences: why this answer is correct>"}
+ "explanation": "<detailed reasoning: what the question and its graphics show, the steps that lead to the answer, why the chosen option is correct and the alternatives are not>"}
 If the question has no answer options, set "options" to [] and "answer" to "".
 If the frames are unreadable, reply exactly {"unreadable": true}.`,
 		},
