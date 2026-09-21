@@ -1,0 +1,11 @@
+[dshow @ 0x5623a4b1c6c0] DirectShow video devices (some may be both audio and video)
+[dshow @ 0x5623a4b1c6c0]  "USB2.0 HD UVC WebCam" (video)
+[dshow @ 0x5623a4b1c6c0]   Alternative name "@device_pnp_\\?\usb#vid_5986&pid_211c&mi_00#7&2c3d5f8&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global"
+[dshow @ 0x5623a4b1c6c0]  "OBS Virtual Camera" (video)
+[dshow @ 0x5623a4b1c6c0]   Alternative name "@device_sw_{860bb310-5d01-11d0-bd3b-00a0c911ce86}\{a3f5c2d1-9b7e-4c8a-8d2f-1e6b9a0c4d7f}"
+[dshow @ 0x5623a4b1c6c0]  "AVerMedia USB2.0 Capture" (video)
+[dshow @ 0x5623a4b1c6c0]   Alternative name "@device_pnp_\\?\usb#vid_07ca&pid_c039&mi_01#8&1e2a4b7&0&0001#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global"
+[dshow @ 0x5623a4b1c6c0] DirectShow audio devices
+[dshow @ 0x5623a4b1c6c0]  "Микрофон (USB2.0 HD UVC WebCam)" (audio)
+[dshow @ 0x5623a4b1c6c0]  "AVerMedia Audio" (audio)
+[dshow @ 0x5623a4b1c6c0] Could not open input file "dummy" (dummy): I/O error

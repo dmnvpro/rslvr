@@ -95,3 +95,9 @@ fabric.properties
 .idea
 *.iml
 .env
+# rslvr
+/bin/
+/cover.out
+/config.yaml
+/shots/*
+!shots/.gitkeep

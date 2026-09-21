@@ -1,0 +1,45 @@
+# rslvr example configuration.
+# Copy to config.yaml and edit; every key is optional (built-in defaults below).
+# Precedence: CLI flags > environment (and .env) > this file > defaults.
+
+listen: "127.0.0.1:8080"      # 0.0.0.0:8080 to serve the LAN
+timeout: 30s                  # overall deadline of one grab+analyze cycle
+no_cache: false               # true disables the 30s frame-hash answer cache
+
+capture:
+  backend: "ffmpeg"           # the only implemented backend; anything else is an error
+  ffmpeg_path: "ffmpeg"
+  device: ""                  # "" = first available; id, index or name substring
+  output_format: "jpeg"       # jpeg | png
+  jpeg_quality: 85            # 1..100
+  save_dir: "./shots"         # "" = do not save frame copies
+  warmup_ms: 700ms            # pause between device open and frame grab (black-frame fix)
+
+vision:
+  base_url: "https://openrouter.ai/api/v1"   # any OpenAI-compatible /chat/completions endpoint
+  api_key_env: "OPENAI_API_KEY"
+  api_key: ""                 # avoid; prefer the env var or .env (never commit it)
+  model: "openai/gpt-5-image-mini"           # vendor/model format for aggregators
+  timeout: 30s                # budget for one analysis (retries included)
+  max_retries: 3              # additional attempts on 429/5xx/network errors
+  retry_backoff: 800ms        # first backoff step; exponential with jitter
+  max_tokens: 500
+  temperature: 0.0
+  detail: "high"              # low | high | auto (image detail, affects cost)
+  system_prompt: |
+    You are an assistant that reads text on images.
+  user_prompt: |
+    The image shows a quiz question. Read the question and the answer options.
+    Reply on a single line: first the letter(s) of the correct option, then a vertical
+    bar "|", then the answer text. If the image is unreadable, reply exactly "UNREADABLE".
+
+server:
+  read_timeout: 15s
+  write_timeout: 60s          # must exceed vision.timeout
+  max_concurrent_jobs: 1      # slot pool; when full, new requests get HTTP 409 (no queue)
+  allowed_ips: []             # empty = allow all; e.g. ["127.0.0.1", "192.168.1.0/24"]
+  auth_token: ""              # "" = no auth; otherwise Bearer / X-Auth-Token / ?token= for the page
+
+logging:
+  level: "info"               # debug | info | warn | error
+  format: "text"              # text | json

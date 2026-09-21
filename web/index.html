@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rslvr — quiz answer resolver</title>
+<style>
+  :root {
+    --bg: #0f1115; --card: #171a21; --line: #2a2f3a; --text: #e6e9ef;
+    --muted: #8b93a3; --accent: #4f8cff; --ok: #3fb950; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 720px; margin: 0 auto; padding: 24px 16px 64px; }
+  header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+  h1 { font-size: 22px; margin: 0; letter-spacing: 1px; }
+  .pill {
+    margin-left: auto; font-size: 13px; padding: 3px 12px; border-radius: 999px;
+    border: 1px solid var(--line); color: var(--muted);
+  }
+  .pill.busy { color: #ffd166; border-color: #ffd16666; }
+  .pill.err  { color: var(--err); border-color: #f8514966; }
+  label { display: block; font-size: 13px; color: var(--muted); margin: 14px 0 6px; }
+  select, textarea {
+    width: 100%; background: var(--card); color: var(--text);
+    border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; font: inherit;
+  }
+  textarea { min-height: 70px; resize: vertical; }
+  #btn-shot {
+    width: 100%; margin-top: 18px; padding: 14px; font-size: 17px; font-weight: 600;
+    color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
+  }
+  #btn-shot:disabled { opacity: .55; cursor: wait; }
+  #btn-shot kbd {
+    font: 12px ui-monospace, monospace; background: #ffffff26;
+    padding: 1px 7px; border-radius: 5px; margin-left: 8px;
+  }
+  .card {
+    margin-top: 18px; background: var(--card); border: 1px solid var(--line);
+    border-radius: 12px; padding: 16px;
+  }
+  .answer { font-size: 19px; font-weight: 600; word-break: break-word; }
+  .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; color: var(--muted); font-size: 13px; }
+  img.preview { max-height: 180px; max-width: 100%; border-radius: 8px; border: 1px solid var(--line); margin-top: 12px; }
+  details { margin-top: 10px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 13px; }
+  pre.raw {
+    background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; white-space: pre-wrap; word-break: break-word; font-size: 13px;
+  }
+  .error-box { color: var(--err); white-space: pre-wrap; }
+  .hint { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .row { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 14px; }
+  .history-item { border-top: 1px solid var(--line); padding: 10px 0; }
+  .history-item:first-child { border-top: 0; }
+  .history-item .h-answer { font-weight: 600; }
+  .history-item .h-meta { color: var(--muted); font-size: 12px; }
+  .hidden { display: none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>rslvr</h1>
+    <span class="pill" id="pill">Ready</span>
+  </header>
+
+  <label for="dev">Video device</label>
+  <select id="dev"><option value="">Loading…</option></select>
+
+  <button id="btn-shot">Take screenshot<kbd>Space</kbd></button>
+
+  <div id="result" class="card hidden">
+    <div class="answer" id="answer"></div>
+    <div class="meta">
+      <span id="m-model"></span>
+      <span id="m-latency"></span>
+      <span id="m-usage"></span>
+    </div>
+    <img id="preview" class="preview" alt="captured frame">
+    <details><summary>Raw model reply</summary><pre class="raw" id="raw"></pre></details>
+  </div>
+
+  <div id="error" class="card hidden">
+    <div class="error-box" id="error-text"></div>
+    <details><summary>Details</summary><pre class="raw" id="error-detail"></pre></details>
+  </div>
+
+  <details>
+    <summary>Options</summary>
+    <label for="prompt-override">Prompt override (replaces the configured user prompt)</label>
+    <textarea id="prompt-override" placeholder="Leave empty to use the configured prompt"></textarea>
+    <div class="row">
+      <input type="checkbox" id="save-frame">
+      <label for="save-frame" style="margin:0">Save frame to disk (shots dir)</label>
+    </div>
+  </details>
+
+  <details id="history-box">
+    <summary>History (<span id="history-count">0</span>)</summary>
+    <div id="history"></div>
+  </details>
+
+  <p class="hint">Requests are served by your local rslvr instance; only the captured frame leaves the machine (to the configured vision API).</p>
+</main>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+const STORAGE = { device: "rslvr.device", token: "rslvr.token" };
+const HISTORY_LIMIT = 10;
+const history = [];
+
+// --- state machine: idle -> busy -> idle | error -------------------------
+let state = "idle";
+function setState(next) {
+  state = next;
+  const pill = $("pill"), btn = $("btn-shot");
+  btn.disabled = next === "busy";
+  pill.className = "pill" + (next === "busy" ? " busy" : next === "error" ? " err" : "");
+  pill.textContent = next === "busy" ? "Capturing…" : next === "error" ? "Error" : "Ready";
+  if (next !== "error") $("error").classList.add("hidden");
+}
+
+// --- auth token (optional, set when auth_token is configured) ------------
+const url = new URL(location.href);
+if (url.searchParams.has("token")) {
+  localStorage.setItem(STORAGE.token, url.searchParams.get("token"));
+  document.cookie = "rslvr_token=" + encodeURIComponent(url.searchParams.get("token")) +
+    "; path=/; max-age=604800; samesite=strict";
+  url.searchParams.delete("token");
+  history.replaceState(null, "", url.pathname + url.search);
+}
+const token = () => localStorage.getItem(STORAGE.token) || "";
+
+function api(path, opts = {}) {
+  opts.headers = Object.assign({}, opts.headers);
+  if (token()) opts.headers["X-Auth-Token"] = token();
+  return fetch(path, opts);
+}
+
+// --- devices --------------------------------------------------------------
+async function loadDevices() {
+  const sel = $("dev");
+  try {
+    const resp = await api("/api/devices");
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const data = await resp.json();
+    sel.innerHTML = "";
+    for (const d of data.devices || []) {
+      const o = document.createElement("option");
+      o.value = d.id;
+      o.textContent = `[${d.index}] ${d.name || d.id}`;
+      sel.appendChild(o);
+    }
+    if (!sel.children.length) {
+      sel.innerHTML = '<option value="">No video devices found</option>';
+      return;
+    }
+    const saved = localStorage.getItem(STORAGE.device);
+    const ids = [...sel.children].map((o) => o.value);
+    sel.value = ids.includes(saved) ? saved : (data.selected || ids[0]);
+  } catch (err) {
+    sel.innerHTML = '<option value="">Failed to load devices</option>';
+    showError("Could not load the device list", String(err));
+  }
+}
+$("dev").addEventListener("change", () => localStorage.setItem(STORAGE.device, $("dev").value));
+
+// --- main action ----------------------------------------------------------
+async function shoot() {
+  if (state !== "idle") return;
+  setState("busy");
+  $("result").classList.add("hidden");
+  $("error").classList.add("hidden");
+  try {
+    const body = {
+      device: $("dev").value || null,
+      prompt_override: $("prompt-override").value || null,
+      save: $("save-frame").checked,
+    };
+    const resp = await api("/api/screenshot", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const e = data.error || {};
+      throw Object.assign(new Error(e.message || "HTTP " + resp.status), { code: e.code });
+    }
+    renderResult(data);
+    setState("idle");
+  } catch (err) {
+    showError("Screenshot failed" + (err.code ? " (" + err.code + ")" : ""), err.message || String(err));
+    setState("error");
+  }
+}
+
+function renderResult(data) {
+  $("answer").textContent = data.answer || "(empty answer)";
+  $("m-model").textContent = "model: " + (data.model || "?");
+  $("m-latency").textContent = "latency: " + (data.latency_ms ?? "?") + " ms";
+  $("m-usage").textContent = data.usage ? "tokens: " + data.usage.total_tokens : "";
+  $("raw").textContent = data.raw || "";
+  const img = $("preview");
+  if (data.preview) { img.src = data.preview; img.classList.remove("hidden"); }
+  else { img.removeAttribute("src"); img.classList.add("hidden"); }
+  $("result").classList.remove("hidden");
+
+  history.unshift({
+    answer: data.answer, model: data.model, latency_ms: data.latency_ms,
+    ts: new Date(), shot: data.saved_path || "",
+  });
+  history.length = Math.min(history.length, HISTORY_LIMIT);
+  renderHistory();
+}
+
+function renderHistory() {
+  $("history-count").textContent = history.length;
+  $("history-box").classList.toggle("hidden", history.length === 0);
+  $("history").innerHTML = history.map((h) => {
+    const when = h.ts.toLocaleTimeString();
+    return `<div class="history-item"><div class="h-answer"></div>` +
+      `<div class="h-meta">${when} · ${h.model || "?"} · ${h.latency_ms ?? "?"} ms` +
+      (h.shot ? ` · saved: ${h.shot}` : "") + `</div></div>`;
+  }).join("");
+  // answers are inserted via textContent to avoid HTML injection
+  const items = $("history").querySelectorAll(".history-item");
+  items.forEach((el, i) => { el.querySelector(".h-answer").textContent = history[i].answer; });
+}
+
+function showError(title, detail) {
+  $("error-text").textContent = title;
+  $("error-detail").textContent = detail || "";
+  $("error").classList.remove("hidden");
+}
+
+// --- wiring ----------------------------------------------------------------
+$("btn-shot").addEventListener("click", shoot);
+
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
+  const t = e.target;
+  if (t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
+      t.tagName === "SELECT" || t.isContentEditable)) return;
+  e.preventDefault(); // stop page scroll
+  shoot();
+});
+
+loadDevices();
+</script>
+</body>
+</html>

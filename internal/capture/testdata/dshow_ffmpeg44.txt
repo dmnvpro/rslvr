@@ -1,0 +1,6 @@
+[dshow @ 0x1a2b3c40] DirectShow video devices (some may be both audio and video)
+[dshow @ 0x1a2b3c40] "Integrated Webcam" (video)
+[dshow @ 0x1a2b3c40]  Alternative name "@device_pnp_\\?\usb#vid_0bda&pid_568c&mi_00#6&3a4d5e6f&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\global"
+[dshow @ 0x1a2b3c40] "Integrated Webcam" (video)
+[dshow @ 0x1a2b3c40] DirectShow audio devices
+[dshow @ 0x1a2b3c40] "Speakers (Realtek Audio)" (audio)
