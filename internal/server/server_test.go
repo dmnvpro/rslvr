@@ -540,6 +540,51 @@ func TestScreenshot_PromptOverridePlumbsThrough(t *testing.T) {
 	}
 }
 
+// ---- POST /api/history ----
+
+func TestHistory_SavedToDisk(t *testing.T) {
+	dir := t.TempDir()
+	f := newFixture(t, func(c *config.Config) { c.Capture.SaveDir = dir })
+	resp := post(t, f.srv.URL+"/api/history", map[string]any{"text": "rslvr history — test"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	path, _ := decode(t, resp)["saved_path"].(string)
+	if path == "" || !strings.HasPrefix(path, dir+string(os.PathSeparator)) {
+		t.Fatalf("saved_path = %q, want inside %q", path, dir)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "rslvr history — test" {
+		t.Errorf("file content = %q", b)
+	}
+}
+
+func TestHistory_DisabledWithoutSaveDir(t *testing.T) {
+	f := newFixture(t, nil) // SaveDir "" by default
+	resp := post(t, f.srv.URL+"/api/history", map[string]any{"text": "x"})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", resp.StatusCode)
+	}
+	if code := decode(t, resp)["error"].(map[string]any)["code"]; code != "saving_disabled" {
+		t.Errorf("code = %v", code)
+	}
+}
+
+func TestHistory_400EmptyText(t *testing.T) {
+	dir := t.TempDir()
+	f := newFixture(t, func(c *config.Config) { c.Capture.SaveDir = dir })
+	resp := post(t, f.srv.URL+"/api/history", map[string]any{"text": "   "})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestParseCIDRs(t *testing.T) {
 	nets := parseCIDRs([]string{"127.0.0.1", "10.0.0.0/8", "garbage"})
 	if len(nets) != 2 {

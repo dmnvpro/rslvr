@@ -9,6 +9,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
 
 	"rslvr/internal/capture"
 	"rslvr/internal/config"
@@ -49,6 +53,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/devices", s.devices)
 	mux.HandleFunc("POST /api/frame", s.frame)
 	mux.HandleFunc("POST /api/screenshot", s.screenshot)
+	mux.HandleFunc("POST /api/history", s.saveHistory)
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/health", s.health)
 
@@ -197,6 +202,46 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+// maxHistoryBody bounds the history export upload.
+const maxHistoryBody = 4 << 20
+
+// historyBody is the POST /api/history payload: the history export text
+// exactly as the UI renders it for download.
+type historyBody struct {
+	Text string `json:"text"`
+}
+
+// saveHistory persists the session history on the server disk, into
+// capture.save_dir with a timestamped name. Disabled when save_dir is unset.
+func (s *Server) saveHistory(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.Capture.SaveDir == "" {
+		writeError(w, http.StatusForbidden, "saving_disabled",
+			"history saving is disabled: capture.save_dir is not set")
+		return
+	}
+	var body historyBody
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxHistoryBody)).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	if strings.TrimSpace(body.Text) == "" {
+		writeError(w, http.StatusBadRequest, "bad_request", "text: history text is empty")
+		return
+	}
+
+	name := "rslvr-history-" + time.Now().Format("2006-01-02_150405") + ".txt"
+	path := filepath.Join(s.cfg.Capture.SaveDir, name)
+	if err := os.MkdirAll(s.cfg.Capture.SaveDir, 0o755); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "create save dir: "+err.Error())
+		return
+	}
+	if err := os.WriteFile(path, []byte(body.Text), 0o644); err != nil {
+		writeError(w, http.StatusInternalServerError, "internal", "write history: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"saved_path": path})
 }
 
 // statusFor maps pipeline errors onto HTTP statuses per TechSpec §9.

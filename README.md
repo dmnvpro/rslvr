@@ -129,6 +129,7 @@ error (no key / rejected key / upstream / unreadable frame), `4` timeout.
 | `GET /api/devices` | | `{"devices":[{index,id,name,path}],"selected":"..."}` |
 | `POST /api/frame` | | grab one frame without analyzing: body `{"device","save"}` optional; returns `{mime,sha256,image,preview,saved_path}` |
 | `POST /api/screenshot` | | analyze an ordered frame set: body `{"frames":[{"data":"<base64>"},...],"prompt_override"}`; returns the result JSON |
+| `POST /api/history` | | save the session history on the server: body `{"text":"<history export>"}` → `{"saved_path"}`; requires `capture.save_dir` |
 | `GET /api/status` | | `{"state":"idle"\|"busy","busy":bool,"job_id"}` |
 | `GET /api/health` | | `{"ok":true}` (exempt from auth) |
 

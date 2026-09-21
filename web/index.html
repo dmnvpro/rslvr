@@ -77,7 +77,8 @@
   .row { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 14px; }
   .history-item { border-top: 1px solid var(--line); padding: 10px 0; }
   .history-item:first-child { border-top: 0; }
-  .history-item .h-answer { font-weight: 600; }
+  .history-item .h-question { font-weight: 600; word-break: break-word; }
+  .history-item .h-answer { color: var(--muted); font-size: 13px; word-break: break-word; }
   .history-item .h-meta { color: var(--muted); font-size: 12px; }
   .hidden { display: none; }
 </style>
@@ -137,7 +138,11 @@
   <details id="history-box">
     <summary>History (<span id="history-count">0</span>)</summary>
     <div id="history"></div>
-    <div class="row"><button id="btn-export">Download history</button></div>
+    <div class="row">
+      <button id="btn-export">Download history</button>
+      <button id="btn-save-disk">Save to Disk</button>
+      <span id="save-status" class="hint"></span>
+    </div>
   </details>
 
   <p class="hint">Requests are served by your local rslvr instance; only the captured frames leave the machine (to the configured vision API).</p>
@@ -348,21 +353,24 @@ function renderHistory() {
   $("history-box").classList.toggle("hidden", historyLog.length === 0);
   $("history").innerHTML = historyLog.map((h) => {
     const when = h.ts.toLocaleTimeString();
-    return `<div class="history-item"><div class="h-answer"></div>` +
+    return `<div class="history-item"><div class="h-question"></div>` +
+      `<div class="h-answer"></div>` +
       `<div class="h-meta">${when} · ${h.model || "?"} · ${h.latency_ms ?? "?"} ms` +
       (h.shot ? ` · saved: ${h.shot}` : "") + `</div></div>`;
   }).join("");
-  // answers are inserted via textContent to avoid HTML injection
+  // text is inserted via textContent to avoid HTML injection; the heading is
+  // the question, falling back to the answer when the model sent none
   const items = $("history").querySelectorAll(".history-item");
-  items.forEach((el, i) => { el.querySelector(".h-answer").textContent = historyLog[i].answer; });
+  items.forEach((el, i) => {
+    const h = historyLog[i];
+    el.querySelector(".h-question").textContent = h.question || h.answer;
+    el.querySelector(".h-answer").textContent = h.question ? h.answer : "";
+  });
 }
 
 // --- history export --------------------------------------------------------
-function downloadHistory() {
+function buildHistoryText() {
   const now = new Date();
-  const pad = (n) => String(n).padStart(2, "0");
-  const stamp = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()) +
-    "_" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
   const rule = "─".repeat(48);
   const label = (s) => s.padEnd(12);
   const lines = [
@@ -384,12 +392,40 @@ function downloadHistory() {
     if (h.shot) lines.push(label("shot:") + h.shot);
     lines.push(rule);
   });
-  const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+  return lines.join("\n") + "\n";
+}
+
+function downloadHistory() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()) +
+    "_" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+  const blob = new Blob([buildHistoryText()], { type: "text/plain;charset=utf-8" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = `rslvr-history-${stamp}.txt`;
   a.click();
   URL.revokeObjectURL(a.href);
+}
+
+async function saveHistoryToDisk() {
+  if (!historyLog.length) return;
+  const status = $("save-status");
+  try {
+    const resp = await api("/api/history", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: buildHistoryText() }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const e = data.error || {};
+      throw new Error(e.message || "HTTP " + resp.status);
+    }
+    status.textContent = "saved: " + (data.saved_path || "?");
+  } catch (err) {
+    status.textContent = "save failed: " + (err.message || String(err));
+  }
 }
 
 function showError(title, detail) {
@@ -403,6 +439,7 @@ $("btn-shot").addEventListener("click", takeFrame);
 $("btn-resolve").addEventListener("click", resolveQuestion);
 $("btn-newq").addEventListener("click", newQuestion);
 $("btn-export").addEventListener("click", downloadHistory);
+$("btn-save-disk").addEventListener("click", saveHistoryToDisk);
 
 document.addEventListener("keydown", (e) => {
   if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
