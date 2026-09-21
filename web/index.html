@@ -35,10 +35,7 @@
     color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
   }
   .actions button:disabled { opacity: .55; cursor: wait; }
-  .actions kbd {
-    font: 12px ui-monospace, monospace; background: #ffffff26;
-    padding: 1px 7px; border-radius: 5px; margin-left: 8px;
-  }
+  #btn-resolve { background: var(--ok); }
   #btn-newq {
     margin-top: 10px; padding: 6px 14px; font-size: 13px; color: var(--muted);
     background: none; border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
@@ -96,7 +93,7 @@
   <select id="dev"><option value="">Loading…</option></select>
 
   <div class="actions">
-    <button id="btn-shot">Take screenshot<kbd>Space</kbd></button>
+    <button id="btn-shot">Take screenshot</button>
     <button id="btn-resolve" disabled>Resolve</button>
   </div>
   <button id="btn-newq" class="hidden">New question</button>
@@ -159,6 +156,8 @@ const historyLog = [];
 let pending = [];
 
 // --- state machine: idle -> busy -> idle | error -------------------------
+// Error is recoverable: the pending frame set and the history survive, every
+// button keeps working, and the next action hides the error card.
 let state = "idle";
 function setState(next, busyLabel) {
   state = next;
@@ -218,7 +217,7 @@ $("dev").addEventListener("change", () => localStorage.setItem(STORAGE.device, $
 
 // --- capture --------------------------------------------------------------
 async function takeFrame() {
-  if (state !== "idle") return;
+  if (state === "busy") return;
   setState("busy", "Capturing…");
   try {
     const resp = await api("/api/frame", {
@@ -272,7 +271,7 @@ function renderPending() {
 }
 
 function newQuestion() {
-  if (state !== "idle") return;
+  if (state === "busy") return;
   pending = [];
   renderPending();
   $("result").classList.add("hidden");
@@ -281,7 +280,7 @@ function newQuestion() {
 
 // --- resolve ----------------------------------------------------------------
 async function resolveQuestion() {
-  if (state !== "idle" || !pending.length) return;
+  if (state === "busy" || !pending.length) return;
   setState("busy", "Resolving…");
   $("result").classList.add("hidden");
   try {
