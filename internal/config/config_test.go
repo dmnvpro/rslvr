@@ -48,9 +48,6 @@ func TestLoad_MissingDefaultConfig_Warning(t *testing.T) {
 	if res.Config.Capture.Warmup != 700*time.Millisecond {
 		t.Errorf("Warmup = %s, want default 700ms", res.Config.Capture.Warmup)
 	}
-	if !res.Config.Serve || res.Config.Once {
-		t.Errorf("Serve/Once = %v/%v, want true/false", res.Config.Serve, res.Config.Once)
-	}
 }
 
 func TestLoad_ExplicitConfigMissing_Error(t *testing.T) {
@@ -219,17 +216,6 @@ func TestLoad_VersionRequested(t *testing.T) {
 	}
 }
 
-func TestLoad_OnceSwitchesMode(t *testing.T) {
-	t.Chdir(t.TempDir())
-	res, err := Load([]string{"--once"}, nil)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if !res.Config.Once || !res.Config.Serve {
-		t.Errorf("Once/Serve = %v/%v; Once must be true, Serve keeps its default", res.Config.Once, res.Config.Serve)
-	}
-}
-
 func TestLoad_APIKeyInYAMLWarns(t *testing.T) {
 	unsetenv(t, "OPENAI_API_KEY")
 	t.Chdir(t.TempDir())
@@ -307,7 +293,6 @@ func TestValidate(t *testing.T) {
 		{"empty model", func(c *Config) { c.Vision.Model = "" }, "model"},
 		{"bad detail", func(c *Config) { c.Vision.Detail = "ultra" }, "detail"},
 		{"zero vision timeout", func(c *Config) { c.Vision.Timeout = 0 }, "vision.timeout"},
-		{"bad temperature", func(c *Config) { c.Vision.Temperature = 5 }, "temperature"},
 		{"zero jobs", func(c *Config) { c.Server.MaxConcurrentJobs = 0 }, "max_concurrent_jobs"},
 		{"write timeout <= vision", func(c *Config) { c.Server.WriteTimeout = c.Vision.Timeout }, "write_timeout"},
 		{"bad cidr", func(c *Config) { c.Server.AllowedIPs = []string{"10.0.0.0/67"} }, "allowed_ips"},

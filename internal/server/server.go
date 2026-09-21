@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 
@@ -46,6 +47,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /{$}", s.index)
 	mux.HandleFunc("GET /api/devices", s.devices)
+	mux.HandleFunc("POST /api/frame", s.frame)
 	mux.HandleFunc("POST /api/screenshot", s.screenshot)
 	mux.HandleFunc("GET /api/status", s.status)
 	mux.HandleFunc("GET /api/health", s.health)
@@ -95,36 +97,98 @@ func (s *Server) devices(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// screenshotBody is the POST /api/screenshot payload; all fields optional.
-type screenshotBody struct {
-	Device         string  `json:"device"`
-	PromptOverride *string `json:"prompt_override"`
-	Save           *bool   `json:"save"`
+// maxScreenshotBody bounds the multi-frame upload (several PNG frames in
+// base64 grow fast; 64 MB is far beyond any sane set).
+const maxScreenshotBody = 64 << 20
+
+// frameBody is the POST /api/frame payload; all fields optional.
+type frameBody struct {
+	Device string `json:"device"`
+	Save   *bool  `json:"save"`
 }
 
-// screenshot runs one job synchronously and returns the result with an
-// inline preview of the frame.
-func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
-	var body screenshotBody
+// frame captures one frame without analyzing it. The web UI accumulates the
+// frames of a question client-side and sends them back with /api/screenshot.
+func (s *Server) frame(w http.ResponseWriter, r *http.Request) {
+	var body frameBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
 		return
-	}
-
-	prompt := s.cfg.Vision.UserPrompt
-	if body.PromptOverride != nil && *body.PromptOverride != "" {
-		prompt = *body.PromptOverride
 	}
 	save := s.cfg.Capture.SaveDir != ""
 	if body.Save != nil {
 		save = *body.Save
 	}
 
-	out, err := s.pipe.Run(r.Context(), jobs.Request{
-		Device: body.Device,
-		Prompt: prompt,
-		Save:   save,
+	g, err := s.pipe.Grab(r.Context(), body.Device, save)
+	if err != nil {
+		status, code := statusFor(err)
+		s.log.Info("frame grab failed",
+			slog.String("code", code), slog.String("err", err.Error()))
+		writeError(w, status, code, err.Error())
+		return
+	}
+
+	b64 := base64.StdEncoding.EncodeToString(g.Frame.Data)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"mime":       g.Frame.MIME,
+		"sha256":     g.SHA256,
+		"image":      b64,
+		"preview":    "data:" + g.Frame.MIME + ";base64," + b64,
+		"saved_path": g.SavedPath,
 	})
+}
+
+// screenshotBody is the POST /api/screenshot payload: the Frame set gathered
+// via /api/frame plus an optional prompt override.
+type screenshotBody struct {
+	Frames         []frameRef `json:"frames"`
+	PromptOverride *string    `json:"prompt_override"`
+}
+
+type frameRef struct {
+	Data string `json:"data"` // base64 frame bytes
+}
+
+// screenshot analyzes an ordered Frame set as one question and returns the
+// Result; the previews are already known to the client.
+func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxScreenshotBody)
+	var body screenshotBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", "invalid JSON body: "+err.Error())
+		return
+	}
+	if len(body.Frames) == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "frames: at least one frame is required")
+		return
+	}
+
+	frames := make([]vision.Frame, 0, len(body.Frames))
+	for i, ref := range body.Frames {
+		data, err := base64.StdEncoding.DecodeString(ref.Data)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("frames[%d].data: invalid base64: %v", i, err))
+			return
+		}
+		// Re-validate every frame server-side; the MIME is derived from the
+		// bytes, never trusted from the client.
+		mime, err := capture.ValidateFrame(data)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "bad_request",
+				fmt.Sprintf("frames[%d]: %v", i, err))
+			return
+		}
+		frames = append(frames, vision.Frame{Data: data, MIME: mime})
+	}
+
+	prompt := s.cfg.Vision.UserPrompt
+	if body.PromptOverride != nil && *body.PromptOverride != "" {
+		prompt = *body.PromptOverride
+	}
+
+	res, err := s.pipe.Resolve(r.Context(), frames, prompt)
 	if err != nil {
 		status, code := statusFor(err)
 		s.log.Info("screenshot failed",
@@ -132,15 +196,7 @@ func (s *Server) screenshot(w http.ResponseWriter, r *http.Request) {
 		writeError(w, status, code, err.Error())
 		return
 	}
-
-	resp := struct {
-		vision.Result
-		Preview string `json:"preview,omitempty"`
-	}{Result: out.Result}
-	if len(out.Frame) > 0 {
-		resp.Preview = "data:" + out.MIME + ";base64," + base64.StdEncoding.EncodeToString(out.Frame)
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, res)
 }
 
 // statusFor maps pipeline errors onto HTTP statuses per TechSpec §9.

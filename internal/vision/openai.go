@@ -25,7 +25,6 @@ type Options struct {
 	APIKey       string // never logged; use logx.MaskKey for diagnostics
 	Model        string
 	MaxTokens    int
-	Temperature  float64
 	Detail       string // low | high | auto
 	SystemPrompt string
 	UserPrompt   string
@@ -68,11 +67,21 @@ func HashImage(img []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// HashFrames returns the SHA-256 identifying an ordered Frame set: every
+// frame's hash plus its MIME folded in capture order.
+func HashFrames(frames []Frame) string {
+	h := sha256.New()
+	for _, f := range frames {
+		io.WriteString(h, HashImage(f.Data))
+		io.WriteString(h, f.MIME)
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
 type chatRequest struct {
-	Model       string    `json:"model"`
-	Messages    []message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens"`
-	Temperature float64   `json:"temperature"`
+	Model     string    `json:"model"`
+	Messages  []message `json:"messages"`
+	MaxTokens int       `json:"max_tokens"`
 }
 
 type message struct {
@@ -134,23 +143,31 @@ func (c *errorCode) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-// Analyze posts one frame to /chat/completions and extracts the answer.
-func (c *OpenAI) Analyze(ctx context.Context, img []byte, mime string) (Result, error) {
+// Analyze posts one Frame set to /chat/completions and extracts the answer.
+func (c *OpenAI) Analyze(ctx context.Context, frames []Frame) (Result, error) {
 	if c.o.APIKey == "" {
 		return Result{}, ErrNoAPIKey
 	}
+	if len(frames) == 0 {
+		return Result{}, fmt.Errorf("no frames to analyze")
+	}
 
-	payload, err := json.Marshal(c.buildRequest(mime, img))
+	payload, err := json.Marshal(c.buildRequest(frames))
 	if err != nil {
 		return Result{}, fmt.Errorf("encode request: %w", err)
 	}
 
+	total := 0
+	for _, f := range frames {
+		total += len(f.Data)
+	}
 	if c.o.Log != nil {
 		c.o.Log.Debug("vision request",
 			slog.String("model", c.o.Model),
 			slog.String("key", logx.MaskKey(c.o.APIKey)),
-			slog.String("image_sha256", HashImage(img)),
-			slog.Int("image_bytes", len(img)),
+			slog.Int("frames", len(frames)),
+			slog.String("frames_sha256", HashFrames(frames)),
+			slog.Int("image_bytes", total),
 		)
 	}
 
@@ -192,7 +209,7 @@ func (c *OpenAI) Analyze(ctx context.Context, img []byte, mime string) (Result, 
 	}
 
 	raw := cr.Choices[0].Message.Content
-	answer, err := Normalize(raw)
+	reply, err := ParseReply(raw)
 	if err != nil {
 		return Result{Raw: raw}, err
 	}
@@ -202,13 +219,16 @@ func (c *OpenAI) Analyze(ctx context.Context, img []byte, mime string) (Result, 
 		model = c.o.Model
 	}
 	res := Result{
-		Answer:    answer,
-		Raw:       raw,
-		Model:     model,
-		LatencyMS: latency.Milliseconds(),
-		Usage:     cr.Usage,
-		RequestID: cr.ID,
-		ImageHash: HashImage(img),
+		Answer:      reply.Answer,
+		Question:    reply.Question,
+		Options:     reply.Options,
+		Explanation: reply.Explanation,
+		Raw:         raw,
+		Model:       model,
+		LatencyMS:   latency.Milliseconds(),
+		Usage:       cr.Usage,
+		RequestID:   cr.ID,
+		ImageHash:   HashFrames(frames),
 	}
 	if c.o.Log != nil {
 		c.o.Log.Debug("vision response",
@@ -254,19 +274,25 @@ func (c *OpenAI) Preflight(ctx context.Context) error {
 	}
 }
 
-func (c *OpenAI) buildRequest(mime string, img []byte) chatRequest {
-	dataURL := "data:" + mime + ";base64," + base64.StdEncoding.EncodeToString(img)
+// buildRequest interleaves "Frame N:" markers with the images so the model
+// reads the set in capture order and cannot mix the frames up.
+func (c *OpenAI) buildRequest(frames []Frame) chatRequest {
+	parts := make([]part, 0, 2*len(frames)+1)
+	parts = append(parts, part{Type: "text", Text: c.o.UserPrompt})
+	for i, f := range frames {
+		parts = append(parts, part{Type: "text", Text: fmt.Sprintf("Frame %d:", i+1)})
+		parts = append(parts, part{Type: "image_url", ImageURL: &imageRef{
+			URL:    "data:" + f.MIME + ";base64," + base64.StdEncoding.EncodeToString(f.Data),
+			Detail: c.o.Detail,
+		}})
+	}
 	return chatRequest{
 		Model: c.o.Model,
 		Messages: []message{
 			{Role: "system", Content: c.o.SystemPrompt},
-			{Role: "user", Content: []part{
-				{Type: "text", Text: c.o.UserPrompt},
-				{Type: "image_url", ImageURL: &imageRef{URL: dataURL, Detail: c.o.Detail}},
-			}},
+			{Role: "user", Content: parts},
 		},
-		MaxTokens:   c.o.MaxTokens,
-		Temperature: c.o.Temperature,
+		MaxTokens: c.o.MaxTokens,
 	}
 }
 

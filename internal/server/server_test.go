@@ -3,6 +3,7 @@ package server
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -57,7 +59,7 @@ type fakeAna struct {
 	calls int
 }
 
-func (f *fakeAna) Analyze(_ context.Context, _ []byte, _ string) (vision.Result, error) {
+func (f *fakeAna) Analyze(_ context.Context, _ []vision.Frame) (vision.Result, error) {
 	f.mu.Lock()
 	f.calls++
 	f.mu.Unlock()
@@ -86,6 +88,30 @@ func frameJPEG(t *testing.T) []byte {
 	return buf.Bytes()
 }
 
+func frameB64(t *testing.T, px byte) string {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for y := 0; y < 8; y++ {
+		for x := 0; x < 8; x++ {
+			img.Set(x, y, color.RGBA{px, px, px, 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+func shotBody(t *testing.T, px ...byte) map[string]any {
+	t.Helper()
+	frames := make([]any, 0, len(px))
+	for _, p := range px {
+		frames = append(frames, map[string]any{"data": frameB64(t, p)})
+	}
+	return map[string]any{"frames": frames}
+}
+
 type fixture struct {
 	srv  *httptest.Server
 	cap  *fakeCap
@@ -95,11 +121,10 @@ type fixture struct {
 
 func newFixture(t *testing.T, mutate func(*config.Config)) *fixture {
 	t.Helper()
-	frame := frameJPEG(t)
 	f := &fixture{
 		cap: &fakeCap{
 			devices: []capture.Device{{Index: 0, ID: "/dev/video0", Name: "USB Cam", Path: "/dev/video0"}},
-			frame:   frame,
+			frame:   frameJPEG(t),
 			mime:    "image/jpeg",
 		},
 		ana: &fakeAna{res: vision.Result{Answer: "B | Paris", Model: "test/model", LatencyMS: 42}},
@@ -112,6 +137,7 @@ func newFixture(t *testing.T, mutate func(*config.Config)) *fixture {
 	runner := jobs.NewRunner(jobs.Options{
 		Capturer:      f.cap,
 		Analyzer:      f.ana,
+		Saver:         jobs.NewSaver(cfg.Capture.SaveDir),
 		Timeout:       cfg.Timeout,
 		VisionTimeout: cfg.Vision.Timeout,
 		CacheTTL:      30 * time.Second,
@@ -145,11 +171,106 @@ func decode(t *testing.T, resp *http.Response) map[string]any {
 	return m
 }
 
-// ---- tests ----
+// ---- POST /api/frame ----
+
+func TestFrame_200Shape(t *testing.T) {
+	f := newFixture(t, nil)
+	resp := post(t, f.srv.URL+"/api/frame", map[string]any{"save": false})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	m := decode(t, resp)
+	if m["mime"] != "image/jpeg" || m["sha256"] == "" {
+		t.Errorf("frame response = %v", m)
+	}
+	if m["image"] != base64.StdEncoding.EncodeToString(f.cap.frame) {
+		t.Error("image must be the base64 frame")
+	}
+	if preview, _ := m["preview"].(string); !strings.HasPrefix(preview, "data:image/jpeg;base64,") {
+		t.Errorf("preview = %q", preview)
+	}
+	if m["saved_path"] != "" {
+		t.Errorf("saved_path = %v, want empty (saving disabled)", m["saved_path"])
+	}
+}
+
+func TestFrame_SavesShot(t *testing.T) {
+	dir := t.TempDir()
+	f := newFixture(t, func(c *config.Config) { c.Capture.SaveDir = dir })
+	resp := post(t, f.srv.URL+"/api/frame", map[string]any{})
+	m := decode(t, resp)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+	path, _ := m["saved_path"].(string)
+	if path == "" {
+		t.Fatal("saved_path empty")
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("saved file missing: %v", err)
+	}
+}
+
+func TestFrame_409WhileResolving(t *testing.T) {
+	f := newFixture(t, nil)
+	f.ana.block = make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		_ = post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1))
+		close(done)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if f.pipe.Status().Busy {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !f.pipe.Status().Busy {
+		t.Fatal("resolve never started")
+	}
+	// The device is an exclusive resource: no grab while an analysis runs.
+	resp := post(t, f.srv.URL+"/api/frame", map[string]any{})
+	if resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d, want 409", resp.StatusCode)
+	}
+	resp.Body.Close()
+
+	close(f.ana.block)
+	<-done
+}
+
+func TestFrame_GrabErrors(t *testing.T) {
+	cases := []struct {
+		grabErr error
+		want    int
+		code    string
+	}{
+		{capture.ErrNoSignal, http.StatusUnprocessableEntity, "no_signal"},
+		{capture.ErrDeviceBusy, http.StatusConflict, "device_busy"},
+		{capture.ErrTimeout, http.StatusGatewayTimeout, "timeout"},
+	}
+	for _, c := range cases {
+		t.Run(c.code, func(t *testing.T) {
+			f := newFixture(t, nil)
+			f.cap.grabErr = c.grabErr
+			resp := post(t, f.srv.URL+"/api/frame", map[string]any{})
+			defer resp.Body.Close()
+			if resp.StatusCode != c.want {
+				t.Fatalf("status = %d, want %d", resp.StatusCode, c.want)
+			}
+			if code := decode(t, resp)["error"].(map[string]any)["code"]; code != c.code {
+				t.Errorf("code = %v", code)
+			}
+		})
+	}
+}
+
+// ---- POST /api/screenshot ----
 
 func TestScreenshot_200Shape(t *testing.T) {
 	f := newFixture(t, nil)
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	resp := post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1, 2, 3))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d", resp.StatusCode)
@@ -160,10 +281,6 @@ func TestScreenshot_200Shape(t *testing.T) {
 	}
 	if m["image_sha256"] == "" {
 		t.Error("image_sha256 missing")
-	}
-	preview, _ := m["preview"].(string)
-	if !strings.HasPrefix(preview, "data:image/jpeg;base64,") {
-		t.Errorf("preview = %q", preview)
 	}
 }
 
@@ -183,16 +300,34 @@ func TestScreenshot_400BadJSON(t *testing.T) {
 	}
 }
 
+func TestScreenshot_400NoFrames(t *testing.T) {
+	f := newFixture(t, nil)
+	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestScreenshot_400GarbageFrame(t *testing.T) {
+	f := newFixture(t, nil)
+	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{
+		"frames": []any{map[string]any{"data": base64.StdEncoding.EncodeToString([]byte("not an image"))}},
+	})
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
 func TestScreenshot_409Busy(t *testing.T) {
 	f := newFixture(t, nil)
 	f.ana.block = make(chan struct{})
 	done := make(chan struct{})
 	go func() {
-		_ = post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+		_ = post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1))
 		close(done)
 	}()
-	// Wait until the runner actually holds the slot (deterministic), then the
-	// next request must get 409 immediately.
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if f.pipe.Status().Busy {
@@ -203,7 +338,7 @@ func TestScreenshot_409Busy(t *testing.T) {
 	if !f.pipe.Status().Busy {
 		t.Fatal("first job never started")
 	}
-	second := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	second := post(t, f.srv.URL+"/api/screenshot", shotBody(t, 2))
 	if second.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want 409", second.StatusCode)
 	}
@@ -216,7 +351,7 @@ func TestScreenshot_409Busy(t *testing.T) {
 func TestScreenshot_422Unreadable(t *testing.T) {
 	f := newFixture(t, nil)
 	f.ana.err = vision.ErrUnreadableImage
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	resp := post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("status = %d, want 422", resp.StatusCode)
@@ -226,30 +361,10 @@ func TestScreenshot_422Unreadable(t *testing.T) {
 	}
 }
 
-func TestScreenshot_422NoSignal(t *testing.T) {
-	f := newFixture(t, nil)
-	f.cap.grabErr = capture.ErrNoSignal
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusUnprocessableEntity {
-		t.Fatalf("status = %d, want 422", resp.StatusCode)
-	}
-}
-
-func TestScreenshot_409DeviceBusy(t *testing.T) {
-	f := newFixture(t, nil)
-	f.cap.grabErr = capture.ErrDeviceBusy
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", resp.StatusCode)
-	}
-}
-
 func TestScreenshot_502Upstream(t *testing.T) {
 	f := newFixture(t, nil)
 	f.ana.err = fmt.Errorf("dial refused: %w", vision.ErrUpstream)
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	resp := post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
@@ -259,20 +374,10 @@ func TestScreenshot_502Upstream(t *testing.T) {
 func TestScreenshot_502Auth(t *testing.T) {
 	f := newFixture(t, nil)
 	f.ana.err = vision.ErrAuth
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	resp := post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
-	}
-}
-
-func TestScreenshot_504Timeout(t *testing.T) {
-	f := newFixture(t, nil)
-	f.cap.grabErr = capture.ErrTimeout
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusGatewayTimeout {
-		t.Fatalf("status = %d, want 504", resp.StatusCode)
 	}
 }
 
@@ -317,7 +422,7 @@ func TestStatus_Health_Index(t *testing.T) {
 	body, _ := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	html := string(body)
-	for _, want := range []string{`id="btn-shot"`, `id="dev"`, `Take screenshot`} {
+	for _, want := range []string{`id="btn-shot"`, `id="btn-resolve"`, `id="btn-newq"`, `id="dev"`, `Take screenshot`, `Resolve`} {
 		if !strings.Contains(html, want) {
 			t.Errorf("index.html missing %q", want)
 		}
@@ -328,7 +433,7 @@ func TestCIDR_Whitelist(t *testing.T) {
 	f := newFixture(t, func(c *config.Config) {
 		c.Server.AllowedIPs = []string{"127.0.0.0/8"} // httptest client is 127.0.0.1
 	})
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	resp := post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1))
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("allowed IP rejected: %d", resp.StatusCode)
@@ -341,7 +446,8 @@ func TestCIDR_Denied(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Server.AllowedIPs = []string{"10.9.9.0/24"}
 	runner := jobs.NewRunner(jobs.Options{Capturer: &fakeCap{}, Analyzer: &fakeAna{}})
-	h := New(Deps{Cfg: cfg, Runner: runner, Capturer: &fakeCap{}}).Handler()
+	h := New(Deps{Cfg: cfg, Runner: runner, Capturer: &fakeCap{},
+		Log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Handler()
 
 	req := httptest.NewRequest("POST", "/api/screenshot", strings.NewReader("{}"))
 	req.RemoteAddr = "203.0.113.7:12345"
@@ -356,7 +462,7 @@ func TestToken_Required(t *testing.T) {
 	f := newFixture(t, func(c *config.Config) { c.Server.AuthToken = "s3cret" })
 
 	// No token → 401.
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{})
+	resp := post(t, f.srv.URL+"/api/screenshot", shotBody(t, 1))
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("no token: %d, want 401", resp.StatusCode)
 	}
@@ -371,7 +477,7 @@ func TestToken_Required(t *testing.T) {
 	}
 
 	// Bearer token works.
-	req, _ := http.NewRequest("POST", f.srv.URL+"/api/screenshot", strings.NewReader("{}"))
+	req, _ := http.NewRequest("POST", f.srv.URL+"/api/screenshot", bytes.NewReader(mustJSON(t, shotBody(t, 1))))
 	req.Header.Set("Authorization", "Bearer s3cret")
 	resp2, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -383,7 +489,7 @@ func TestToken_Required(t *testing.T) {
 	}
 
 	// X-Auth-Token works.
-	req, _ = http.NewRequest("POST", f.srv.URL+"/api/screenshot", strings.NewReader("{}"))
+	req, _ = http.NewRequest("POST", f.srv.URL+"/api/screenshot", bytes.NewReader(mustJSON(t, shotBody(t, 1))))
 	req.Header.Set("X-Auth-Token", "s3cret")
 	resp3, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -395,14 +501,26 @@ func TestToken_Required(t *testing.T) {
 	}
 }
 
+func mustJSON(t *testing.T, v any) []byte {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
 func TestScreenshot_PromptOverridePlumbsThrough(t *testing.T) {
 	// The override changes the job prompt, which is part of the cache key:
-	// two identical frames with different overrides must analyze twice, and
-	// the same override twice must hit the cache once.
+	// two identical frame sets with different overrides must analyze twice,
+	// and the same override twice must hit the cache once.
 	f := newFixture(t, nil)
 
 	for _, override := range []string{"custom prompt", "custom prompt"} {
-		resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{"prompt_override": override})
+		resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{
+			"frames":          shotBody(t, 1)["frames"],
+			"prompt_override": override,
+		})
 		resp.Body.Close()
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d", resp.StatusCode)
@@ -412,7 +530,10 @@ func TestScreenshot_PromptOverridePlumbsThrough(t *testing.T) {
 		t.Fatalf("calls = %d, want 1 (same override must hit cache)", got)
 	}
 
-	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{"prompt_override": "other prompt"})
+	resp := post(t, f.srv.URL+"/api/screenshot", map[string]any{
+		"frames":          shotBody(t, 1)["frames"],
+		"prompt_override": "other prompt",
+	})
 	resp.Body.Close()
 	if got := f.ana.callCount(); got != 2 {
 		t.Fatalf("calls = %d, want 2 (different override is a different question)", got)

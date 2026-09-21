@@ -31,8 +31,6 @@ type Config struct {
 
 	// CLI-only mode switches; never come from YAML.
 	ListDevices bool `yaml:"-"`
-	Once        bool `yaml:"-"`
-	Serve       bool `yaml:"-"`
 	OpenBrowser bool `yaml:"-"`
 }
 
@@ -57,7 +55,6 @@ type Vision struct {
 	MaxRetries   int           `yaml:"max_retries"`
 	RetryBackoff time.Duration `yaml:"retry_backoff"`
 	MaxTokens    int           `yaml:"max_tokens"`
-	Temperature  float64       `yaml:"temperature"`
 	Detail       string        `yaml:"detail"` // low | high | auto
 	SystemPrompt string        `yaml:"system_prompt"`
 	UserPrompt   string        `yaml:"user_prompt"`
@@ -137,7 +134,7 @@ func Defaults() Config {
 			Backend:      "ffmpeg",
 			FFmpegPath:   "ffmpeg",
 			Device:       "",
-			OutputFormat: "jpeg",
+			OutputFormat: "png",
 			JPEGQuality:  85,
 			SaveDir:      "./shots",
 			Warmup:       700 * time.Millisecond,
@@ -149,13 +146,18 @@ func Defaults() Config {
 			Timeout:      30 * time.Second,
 			MaxRetries:   3,
 			RetryBackoff: 800 * time.Millisecond,
-			MaxTokens:    500,
-			Temperature:  0.0,
+			MaxTokens:    2000,
 			Detail:       "high",
-			SystemPrompt: "You are an assistant that reads text on images.",
-			UserPrompt: `The image shows a quiz question. Read the question and the answer options.
-Reply on a single line: first the letter(s) of the correct option, then a vertical
-bar "|", then the answer text. If the image is unreadable, reply exactly "UNREADABLE".`,
+			SystemPrompt: "You are an assistant that reads text on images. " +
+				"Answer only with the JSON object described by the user.",
+			UserPrompt: `The frames (Frame 1, Frame 2, ...) show one quiz question that may continue across frames. Read them in order, then read the question text and the answer options.
+Reply with a single JSON object and nothing else:
+{"question": "<recognized question text>", "options": ["<option A>", "<option B>", ...],
+ "answer": "<letter(s) of the correct option, empty for open questions>",
+ "answer_text": "<text of the correct option, or the full free-form answer>",
+ "explanation": "<1-3 sentences: why this answer is correct>"}
+If the question has no answer options, set "options" to [] and "answer" to "".
+If the frames are unreadable, reply exactly {"unreadable": true}.`,
 		},
 		Server: Server{
 			ReadTimeout:       15 * time.Second,

@@ -14,16 +14,24 @@ type Usage struct {
 	TotalTokens      int `json:"total_tokens"`
 }
 
+// Frame is one image of a Frame set (see CONTEXT.md).
+type Frame struct {
+	Data []byte // raw JPEG/PNG bytes
+	MIME string
+}
+
 // Result is the outcome of one analysis (see CONTEXT.md).
 type Result struct {
-	Answer    string `json:"answer"`
-	Raw       string `json:"raw"` // unprocessed model reply
-	Model     string `json:"model"`
-	LatencyMS int64  `json:"latency_ms"`
-	Usage     Usage  `json:"usage"`
-	RequestID string `json:"request_id"`
-	ImageHash string `json:"image_sha256"`
-	SavedPath string `json:"saved_path,omitempty"` // filled by the job pipeline
+	Answer      string   `json:"answer"`
+	Question    string   `json:"question,omitempty"`    // recognized question text
+	Options     []string `json:"options,omitempty"`     // recognized answer options
+	Explanation string   `json:"explanation,omitempty"` // why the answer is correct
+	Raw         string   `json:"raw"`                   // unprocessed model reply
+	Model       string   `json:"model"`
+	LatencyMS   int64    `json:"latency_ms"`
+	Usage       Usage    `json:"usage"`
+	RequestID   string   `json:"request_id"`
+	ImageHash   string   `json:"image_sha256"` // identity of the whole Frame set
 }
 
 // Sentinel errors mapped to HTTP status codes by internal/server.
@@ -40,5 +48,5 @@ var (
 
 // Analyzer abstracts the answer source; tests inject fakes.
 type Analyzer interface {
-	Analyze(ctx context.Context, img []byte, mime string) (Result, error)
+	Analyze(ctx context.Context, frames []Frame) (Result, error)
 }

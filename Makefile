@@ -19,7 +19,7 @@ build-win: ## CGO_ENABLED=0 windows/amd64
 cross: build-linux build-win
 
 run: build
-	./$(BIN_DIR)/$(APP_NAME) --serve
+	./$(BIN_DIR)/$(APP_NAME)
 
 vet:
 	go vet ./...

@@ -57,9 +57,6 @@ func Validate(cfg *Config) error {
 	if cfg.Vision.MaxTokens <= 0 {
 		return errors.New("vision.max_tokens must be positive")
 	}
-	if cfg.Vision.Temperature < 0 || cfg.Vision.Temperature > 2 {
-		return fmt.Errorf("vision.temperature: %v out of range 0..2", cfg.Vision.Temperature)
-	}
 
 	if cfg.Server.MaxConcurrentJobs < 1 {
 		return errors.New("server.max_concurrent_jobs must be >= 1")

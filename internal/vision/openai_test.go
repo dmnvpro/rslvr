@@ -19,7 +19,6 @@ func clientOpts(url string) Options {
 		APIKey:       "sk-test-secret-key-123456",
 		Model:        "test/model",
 		MaxTokens:    100,
-		Temperature:  0.2,
 		Detail:       "high",
 		SystemPrompt: "sys",
 		UserPrompt:   "user prompt text",
@@ -45,6 +44,10 @@ func okResponse(content string) string {
 	return string(b)
 }
 
+func oneFrame(data string) []Frame {
+	return []Frame{{Data: []byte(data), MIME: "image/jpeg"}}
+}
+
 func TestAnalyze_RequestShapeAndSuccess(t *testing.T) {
 	var gotPath string
 	var gotAuth string
@@ -60,7 +63,7 @@ func TestAnalyze_RequestShapeAndSuccess(t *testing.T) {
 	defer srv.Close()
 
 	c := New(clientOpts(srv.URL))
-	res, err := c.Analyze(context.Background(), []byte("fakejpeg-bytes"), "image/jpeg")
+	res, err := c.Analyze(context.Background(), oneFrame("img"))
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -80,10 +83,17 @@ func TestAnalyze_RequestShapeAndSuccess(t *testing.T) {
 	}
 	user := msgs[1].(map[string]any)
 	parts := user["content"].([]any)
-	if len(parts) != 2 {
+	// prompt text, "Frame 1:" marker, image
+	if len(parts) != 3 {
 		t.Fatalf("user parts = %d", len(parts))
 	}
-	imgPart := parts[1].(map[string]any)["image_url"].(map[string]any)
+	if text := parts[0].(map[string]any)["text"]; text != "user prompt text" {
+		t.Errorf("prompt text part = %v", text)
+	}
+	if marker := parts[1].(map[string]any)["text"]; marker != "Frame 1:" {
+		t.Errorf("frame marker = %v", marker)
+	}
+	imgPart := parts[2].(map[string]any)["image_url"].(map[string]any)
 	if !strings.HasPrefix(imgPart["url"].(string), "data:image/jpeg;base64,") {
 		t.Errorf("image url = %v", imgPart["url"])
 	}
@@ -103,8 +113,66 @@ func TestAnalyze_RequestShapeAndSuccess(t *testing.T) {
 	if res.RequestID != "req-1" {
 		t.Errorf("request_id = %q", res.RequestID)
 	}
-	if res.ImageHash != HashImage([]byte("fakejpeg-bytes")) {
+	if res.ImageHash != HashFrames(oneFrame("img")) {
 		t.Errorf("image hash mismatch: %q", res.ImageHash)
+	}
+}
+
+func TestAnalyze_JsonReplyCarriesQuestionAndOptions(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		io.WriteString(w, okResponse(`{"question":"Capital of France?","options":["A. London","B. Paris"],`+
+			`"answer":"B","answer_text":"Paris","explanation":"Paris is the capital of France."}`))
+	}))
+	defer srv.Close()
+
+	res, err := New(clientOpts(srv.URL)).Analyze(context.Background(), oneFrame("img"))
+	if err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if res.Answer != "B | Paris" || res.Question != "Capital of France?" {
+		t.Errorf("result = %+v", res)
+	}
+	if res.Explanation != "Paris is the capital of France." {
+		t.Errorf("explanation = %q", res.Explanation)
+	}
+	if want := []string{"A. London", "B. Paris"}; len(res.Options) != len(want) || res.Options[0] != want[0] || res.Options[1] != want[1] {
+		t.Errorf("options = %+v, want %+v", res.Options, want)
+	}
+}
+
+// Frame sets interleave "Frame N:" markers with the images in capture order.
+func TestAnalyze_FrameNumbering(t *testing.T) {
+	var parts []any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req map[string]any
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &req)
+		msgs := req["messages"].([]any)
+		parts = msgs[1].(map[string]any)["content"].([]any)
+		io.WriteString(w, okResponse("A | 42"))
+	}))
+	defer srv.Close()
+
+	frames := []Frame{
+		{Data: []byte("first"), MIME: "image/jpeg"},
+		{Data: []byte("second"), MIME: "image/png"},
+	}
+	if _, err := New(clientOpts(srv.URL)).Analyze(context.Background(), frames); err != nil {
+		t.Fatalf("Analyze: %v", err)
+	}
+	if len(parts) != 5 {
+		t.Fatalf("parts = %d, want 5 (text + 2×(marker, image))", len(parts))
+	}
+	for i, want := range []string{"Frame 1:", "Frame 2:"} {
+		got := parts[1+2*i].(map[string]any)["text"]
+		if got != want {
+			t.Errorf("marker %d = %v, want %q", i, got, want)
+		}
+		url := parts[2+2*i].(map[string]any)["image_url"].(map[string]any)["url"].(string)
+		wantPrefix := "data:" + frames[i].MIME + ";base64,"
+		if !strings.HasPrefix(url, wantPrefix) {
+			t.Errorf("frame %d url prefix = %q, want %q", i, url[:20], wantPrefix)
+		}
 	}
 }
 
@@ -114,7 +182,7 @@ func TestAnalyze_UnreadableCarriesRaw(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	res, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	res, err := New(clientOpts(srv.URL)).Analyze(context.Background(), oneFrame("img"))
 	if !errors.Is(err, ErrUnreadableImage) {
 		t.Fatalf("err = %v, want ErrUnreadableImage", err)
 	}
@@ -130,7 +198,7 @@ func TestAnalyze_Auth401(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), oneFrame("img"))
 	if !errors.Is(err, ErrAuth) {
 		t.Fatalf("err = %v, want ErrAuth", err)
 	}
@@ -145,7 +213,7 @@ func TestAnalyze_UpstreamErrorNumericCode(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), oneFrame("img"))
 	if !errors.Is(err, ErrUpstream) {
 		t.Fatalf("err = %v, want ErrUpstream", err)
 	}
@@ -164,7 +232,7 @@ func TestAnalyze_NumericCode401IsAuth(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), oneFrame("img"))
 	if !errors.Is(err, ErrAuth) {
 		t.Fatalf("err = %v, want ErrAuth", err)
 	}
@@ -177,7 +245,7 @@ func TestAnalyze_GarbageBodyIncludesSnippet(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), oneFrame("img"))
 	if !errors.Is(err, ErrUpstream) {
 		t.Fatalf("err = %v, want ErrUpstream", err)
 	}
@@ -212,7 +280,7 @@ func TestErrorCode_UnmarshalJSON(t *testing.T) {
 func TestAnalyze_NoAPIKey(t *testing.T) {
 	o := clientOpts("http://unused")
 	o.APIKey = ""
-	_, err := New(o).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	_, err := New(o).Analyze(context.Background(), oneFrame("img"))
 	if !errors.Is(err, ErrNoAPIKey) {
 		t.Fatalf("err = %v, want ErrNoAPIKey", err)
 	}
@@ -233,7 +301,7 @@ func TestAnalyze_RetriesOn429ThenSucceeds(t *testing.T) {
 
 	o := clientOpts(srv.URL)
 	o.RetryBackoff = time.Millisecond
-	res, err := New(o).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	res, err := New(o).Analyze(context.Background(), oneFrame("img"))
 	if err != nil {
 		t.Fatalf("Analyze: %v", err)
 	}
@@ -254,7 +322,7 @@ func TestAnalyze_NoRetryOn401(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	_, err := New(clientOpts(srv.URL)).Analyze(context.Background(), oneFrame("img"))
 	if !errors.Is(err, ErrAuth) {
 		t.Fatalf("err = %v", err)
 	}
@@ -267,7 +335,7 @@ func TestAnalyze_DoesNotLogAPIKey(t *testing.T) {
 	var logLines strings.Builder
 	o := clientOpts("http://127.0.0.1:1") // connection refused
 	o.Log = newTestLogger(&logLines)
-	_, _ = New(o).Analyze(context.Background(), []byte("img"), "image/jpeg")
+	_, _ = New(o).Analyze(context.Background(), oneFrame("img"))
 
 	out := logLines.String()
 	if strings.Contains(out, "sk-test-secret-key-123456") {

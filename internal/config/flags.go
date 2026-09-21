@@ -16,8 +16,6 @@ type flagSet struct {
 	listen      string
 	device      string
 	listDevices bool
-	once        bool
-	serve       bool
 	prompt      string
 	model       string
 	apiKey      string
@@ -81,8 +79,6 @@ func registerFlags(f *flag.FlagSet, fs *flagSet) {
 	f.StringVar(&fs.listen, "listen", "", "listen address of the web server (e.g. 127.0.0.1:8080)")
 	f.StringVar(&fs.device, "device", "", "video device id, index or name; comma list filters the web UI dropdown")
 	f.BoolVar(&fs.listDevices, "list-devices", false, "list available video devices and exit")
-	f.BoolVar(&fs.once, "once", false, "grab one frame, print the answer to stdout and exit")
-	f.BoolVar(&fs.serve, "serve", true, "run the local web server (default, unless --once)")
 	f.StringVar(&fs.prompt, "prompt", "", "override the user prompt for the model")
 	f.StringVar(&fs.model, "model", "", "vision model id (overrides config)")
 	f.StringVar(&fs.apiKey, "api-key", "", "API key (overrides ENV and config; prefer .env)")
@@ -110,10 +106,6 @@ Exit codes: 0 success; 1 general error; 2 no video devices; 3 OpenAI/API error; 
 
 // applyFlags overrides config values with explicitly passed flags.
 func applyFlags(cfg *Config, f *flagSet) {
-	// Mode flags are applied unconditionally: serve defaults to true and
-	// --once switches the mode in app code.
-	cfg.Serve = f.serve
-	cfg.Once = f.once
 	if f.visited["listen"] {
 		cfg.Listen = f.listen
 	}

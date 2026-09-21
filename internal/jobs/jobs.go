@@ -1,5 +1,5 @@
-// Package jobs runs capture+analyze cycles: admission control (fixed slot
-// pool, no queue), the frame pipeline, answer caching and shot saving.
+// Package jobs runs frame grabs and Frame-set analyses: admission control
+// (fixed slot pool, no queue), answer caching and shot saving.
 package jobs
 
 import (
@@ -49,13 +49,6 @@ func (l *Limiter) TryAcquire() (release func(), ok bool) {
 // Busy reports whether every slot is taken.
 func (l *Limiter) Busy() bool {
 	return len(l.sem) == cap(l.sem)
-}
-
-// Request is one job's parameters; empty fields fall back to config.
-type Request struct {
-	Device string // selector: "" | index | id | name substring
-	Prompt string // resolved user prompt (config default or override)
-	Save   bool
 }
 
 // Status is the current runner state (GET /api/status).

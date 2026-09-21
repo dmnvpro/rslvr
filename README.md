@@ -10,10 +10,9 @@ _______  _____|  |___  _________
             \/                   
 ```
 
-`rslvr` grabs a single frame from a video device (webcam, capture card, OBS
-Virtual Camera), sends it to an OpenAI-compatible vision model, and shows the
-model's answer to the quiz question on the frame — either in the terminal
-(`--once`) or on a local web page with one big button (`--serve`).
+`rslvr` grabs frames from a video device (webcam, capture card, OBS
+Virtual Camera), sends them to an OpenAI-compatible vision model, and shows the
+model's answer to the quiz question on a local web page.
 
 Platforms: **Linux** (V4L2) and **Windows** (DirectShow) are supported; macOS
 is not. No cgo — the binary cross-compiles cleanly; ffmpeg is the only
@@ -74,23 +73,20 @@ Or plain Go: `go build -o bin/rslvr ./cmd/rslvr` (Go 1.25+).
    # [0]  USB2.0 HD UVC WebCam               (Windows)
    ```
 
-3. One shot from the terminal (answer goes to stdout):
+3. Run the web UI and resolve quiz questions:
 
    ```bash
-   ./bin/rslvr --once
+   ./bin/rslvr                       # listens on http://127.0.0.1:8080
+   ./bin/rslvr --listen 0.0.0.0:8080 # reachable from the LAN
+   ./bin/rslvr --open-browser
    ```
 
-4. Or run the web UI and press the button:
-
-   ```bash
-   ./bin/rslvr --serve                       # listens on http://127.0.0.1:8080
-   ./bin/rslvr --serve --listen 0.0.0.0:8080 # reachable from the LAN
-   ./bin/rslvr --serve --open-browser
-   ```
-
-On the page: pick the device, press **Take screenshot** (or hit `Space`), the
-answer, the frame preview and the latency appear below the button. The last
-10 answers stay in the in-memory history.
+On the page: pick the device, press **Take screenshot** (or hit `Space`) for
+every screen of the question — the numbered frames pile up below — then press
+**Resolve** to send the whole set to the model in one request. The answer, the
+question it recognized, the options, an explanation and the frame preview
+appear below. **New question** clears the set. The last 10 answers stay in the
+in-memory history and can be downloaded as a text file.
 
 ---
 
@@ -112,7 +108,7 @@ Useful flags (full list: `--help`):
 
 | Flag | Meaning |
 |---|---|
-| `--device a,b` | in serve mode filters the UI dropdown; in once mode exactly one value |
+| `--device a,b` | filters the UI device dropdown |
 | `--prompt "..."` | override the user prompt for this run |
 | `--model`, `--api-key` | override the config |
 | `--timeout 30s` | overall deadline of one grab+analyze cycle |
@@ -131,7 +127,8 @@ error (no key / rejected key / upstream / unreadable frame), `4` timeout.
 |---|---|---|
 | `GET /` | | single-page UI (inline CSS/JS, works offline) |
 | `GET /api/devices` | | `{"devices":[{index,id,name,path}],"selected":"..."}` |
-| `POST /api/screenshot` | | body `{"device","prompt_override","save"}` — all optional; returns the result JSON plus `preview` (data-URI of the frame) |
+| `POST /api/frame` | | grab one frame without analyzing: body `{"device","save"}` optional; returns `{mime,sha256,image,preview,saved_path}` |
+| `POST /api/screenshot` | | analyze an ordered frame set: body `{"frames":[{"data":"<base64>"},...],"prompt_override"}`; returns the result JSON |
 | `GET /api/status` | | `{"state":"idle"\|"busy","busy":bool,"job_id"}` |
 | `GET /api/health` | | `{"ok":true}` (exempt from auth) |
 

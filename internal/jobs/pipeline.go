@@ -14,14 +14,14 @@ import (
 // maxCacheEntries bounds the in-memory answer cache between sweeps.
 const maxCacheEntries = 256
 
-// Runner executes single grab+analyze cycles.
+// Runner serializes frame grabs and Frame-set analyses on a shared slot pool.
 type Runner struct {
 	cap  capture.Capturer
 	ana  vision.Analyzer
 	lim  *Limiter
 	save *Saver
 
-	timeout       time.Duration // overall cycle deadline
+	timeout       time.Duration // per-job deadline
 	visionTimeout time.Duration // per-analysis budget
 	cacheTTL      time.Duration // 0 disables the cache
 	log           *slog.Logger
@@ -77,20 +77,20 @@ func (r *Runner) Status() Status {
 	return Status{State: "busy", Busy: true, JobID: r.inflight}
 }
 
-// Outcome is the result of a completed job plus the frame itself, so callers
-// (web UI) can show a preview without a second grab.
-type Outcome struct {
-	Result vision.Result
-	Frame  []byte // raw JPEG/PNG bytes; nil on cached answers
-	MIME   string
+// Grabbed is one captured frame plus its identity and optional Shot path.
+type Grabbed struct {
+	Frame     vision.Frame
+	SHA256    string
+	SavedPath string // empty when saving is off or the Shot failed
 }
 
-// Run executes one full cycle: Grab → (save Shot) → Analyze.
-// ErrBusy is returned immediately when no slot is free.
-func (r *Runner) Run(ctx context.Context, req Request) (Outcome, error) {
+// Grab captures a single frame: list → resolve → grab → optional Shot.
+// The device is an exclusive resource, so grabs share the job pool with
+// analyses; ErrBusy is returned immediately when no slot is free.
+func (r *Runner) Grab(ctx context.Context, device string, save bool) (Grabbed, error) {
 	release, ok := r.lim.TryAcquire()
 	if !ok {
-		return Outcome{}, ErrBusy
+		return Grabbed{}, ErrBusy
 	}
 	defer release()
 
@@ -101,61 +101,85 @@ func (r *Runner) Run(ctx context.Context, req Request) (Outcome, error) {
 	ctx, cancel := context.WithTimeout(ctx, r.timeout)
 	defer cancel()
 
-	out, err := r.pipeline(ctx, jobID, req)
+	g, err := r.grab(ctx, device, save)
 	if err != nil {
-		r.log.Info("job failed", slog.String("job_id", jobID), slog.String("err", err.Error()))
+		r.log.Info("grab failed", slog.String("job_id", jobID), slog.String("err", err.Error()))
 	}
-	return out, err
+	return g, err
 }
 
-func (r *Runner) pipeline(ctx context.Context, jobID string, req Request) (Outcome, error) {
-	log := r.log.With(slog.String("job_id", jobID))
+func (r *Runner) grab(ctx context.Context, device string, save bool) (Grabbed, error) {
+	log := r.log
 
 	devs, err := r.cap.List(ctx)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("list devices: %w", err)
+		return Grabbed{}, fmt.Errorf("list devices: %w", err)
 	}
-	dev, err := capture.Resolve(req.Device, devs)
+	dev, err := capture.Resolve(device, devs)
 	if err != nil {
-		return Outcome{}, err
+		return Grabbed{}, err
 	}
 	log.Debug("grabbing frame", slog.String("device", dev.ID))
 
-	frame, mime, err := r.cap.Grab(ctx, dev)
+	data, mime, err := r.cap.Grab(ctx, dev)
 	if err != nil {
-		return Outcome{}, fmt.Errorf("grab from %s: %w", dev.ID, err)
+		return Grabbed{}, fmt.Errorf("grab from %s: %w", dev.ID, err)
 	}
 
-	hash := vision.HashImage(frame)
-	var savedPath string
-	if req.Save && r.save != nil {
-		if savedPath, err = r.save.Save(frame, mime, hash); err != nil {
+	g := Grabbed{Frame: vision.Frame{Data: data, MIME: mime}, SHA256: vision.HashImage(data)}
+	if save && r.save != nil {
+		if g.SavedPath, err = r.save.Save(data, mime, g.SHA256); err != nil {
 			log.Warn("saving shot failed", slog.String("err", err.Error()))
 		}
 	}
+	return g, nil
+}
 
-	if res, ok := r.cached(hash, mime, req.Prompt); ok {
-		log.Debug("cache hit", slog.String("image_sha256", hash))
-		res.SavedPath = savedPath
-		// Frame is fresh anyway; returning it keeps the UI preview working.
-		return Outcome{Result: res, Frame: frame, MIME: mime}, nil
+// Resolve analyzes an ordered Frame set as one question. ErrBusy is returned
+// immediately when no slot is free.
+func (r *Runner) Resolve(ctx context.Context, frames []vision.Frame, prompt string) (vision.Result, error) {
+	release, ok := r.lim.TryAcquire()
+	if !ok {
+		return vision.Result{}, ErrBusy
+	}
+	defer release()
+
+	jobID := NewID()
+	r.setInflight(jobID)
+	defer r.clearInflight()
+
+	ctx, cancel := context.WithTimeout(ctx, r.timeout)
+	defer cancel()
+
+	res, err := r.resolve(ctx, frames, prompt)
+	if err != nil {
+		r.log.Info("job failed", slog.String("job_id", jobID), slog.String("err", err.Error()))
+	}
+	return res, err
+}
+
+func (r *Runner) resolve(ctx context.Context, frames []vision.Frame, prompt string) (vision.Result, error) {
+	setHash := vision.HashFrames(frames)
+
+	if res, ok := r.cached(setHash, prompt); ok {
+		r.log.Debug("cache hit", slog.String("frames_sha256", setHash))
+		return res, nil
 	}
 
 	budget, err := r.visionBudget(ctx)
 	if err != nil {
-		return Outcome{}, err
+		return vision.Result{}, err
 	}
 	actx, acancel := context.WithTimeout(ctx, budget)
 	defer acancel()
 
-	res, err := r.ana.Analyze(actx, frame, mime)
+	res, err := r.ana.Analyze(actx, frames)
 	if err != nil {
-		return Outcome{}, err
+		return vision.Result{}, err
 	}
-	res.ImageHash = hash // the pipeline owns frame identity, not the analyzer
-	res.SavedPath = savedPath
-	r.store(hash, mime, req.Prompt, res)
-	return Outcome{Result: res, Frame: frame, MIME: mime}, nil
+	res.ImageHash = setHash // the pipeline owns frame-set identity, not the analyzer
+	r.store(setHash, prompt, res)
+	return res, nil
 }
 
 // visionBudget reserves min(vision.timeout, remaining overall deadline).
@@ -177,17 +201,18 @@ func (r *Runner) visionBudget(ctx context.Context) (time.Duration, error) {
 	return budget, nil
 }
 
-// cacheKey includes mime and prompt: the same frame under a different prompt
-// is a different question and must not reuse the answer.
-func (r *Runner) cacheKey(hash, mime, prompt string) string {
-	return hash + "|" + mime + "|" + prompt
+// cacheKey includes the prompt: the same Frame set under a different prompt is
+// a different question and must not reuse the answer. The frame-set hash
+// already folds in every frame's bytes and MIME.
+func (r *Runner) cacheKey(setHash, prompt string) string {
+	return setHash + "|" + prompt
 }
 
-func (r *Runner) cached(hash, mime, prompt string) (vision.Result, bool) {
+func (r *Runner) cached(setHash, prompt string) (vision.Result, bool) {
 	if r.cacheTTL <= 0 {
 		return vision.Result{}, false
 	}
-	key := r.cacheKey(hash, mime, prompt)
+	key := r.cacheKey(setHash, prompt)
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	entry, ok := r.cache[key]
@@ -201,7 +226,7 @@ func (r *Runner) cached(hash, mime, prompt string) (vision.Result, bool) {
 	return entry.res, true
 }
 
-func (r *Runner) store(hash, mime, prompt string, res vision.Result) {
+func (r *Runner) store(setHash, prompt string, res vision.Result) {
 	if r.cacheTTL <= 0 {
 		return
 	}
@@ -213,7 +238,7 @@ func (r *Runner) store(hash, mime, prompt string, res vision.Result) {
 			r.cache = map[string]cacheEntry{} // extreme churn; start fresh
 		}
 	}
-	r.cache[r.cacheKey(hash, mime, prompt)] = cacheEntry{res: res, expires: r.now().Add(r.cacheTTL)}
+	r.cache[r.cacheKey(setHash, prompt)] = cacheEntry{res: res, expires: r.now().Add(r.cacheTTL)}
 }
 
 func (r *Runner) sweepLocked() {

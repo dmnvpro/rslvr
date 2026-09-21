@@ -18,14 +18,12 @@ import (
 func TestServe_GracefulShutdownOnSIGINT_Exit0(t *testing.T) {
 	installBackends(t, &fakeCap{
 		devices: []capture.Device{{Index: 0, ID: "d0", Path: "d0"}},
-		frame:   testFrame(t),
-		mime:    "image/jpeg",
 	}, &fakeAna{res: vision.Result{Answer: "A | x"}})
 
 	port := freePort(t)
 	code := make(chan int, 1)
 	go func() {
-		c, _, _ := runApp(t, "--serve", "--api-key", "k",
+		c, _, _ := runApp(t, "--api-key", "k",
 			"--listen", fmt.Sprintf("127.0.0.1:%d", port))
 		code <- c
 	}()

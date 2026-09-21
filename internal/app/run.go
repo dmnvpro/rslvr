@@ -98,7 +98,6 @@ func Run(argv []string, stdout, stderr io.Writer) int {
 		APIKey:       cfg.Vision.APIKey,
 		Model:        cfg.Vision.Model,
 		MaxTokens:    cfg.Vision.MaxTokens,
-		Temperature:  cfg.Vision.Temperature,
 		Detail:       cfg.Vision.Detail,
 		SystemPrompt: cfg.Vision.SystemPrompt,
 		UserPrompt:   cfg.Vision.UserPrompt,
@@ -110,8 +109,6 @@ func Run(argv []string, stdout, stderr io.Writer) int {
 	switch {
 	case cfg.ListDevices:
 		return runListDevices(ctx, cfg, capt, stdout, stderr)
-	case cfg.Once:
-		return runOnce(ctx, cfg, capt, ana, logger, stdout, stderr)
 	default:
 		return runServe(ctx, cfg, capt, ana, logger, stderr)
 	}
@@ -131,45 +128,6 @@ func runListDevices(ctx context.Context, cfg config.Config, capt capture.Capture
 		return ExitGeneral
 	}
 	printDevices(devs, stdout)
-	return ExitOK
-}
-
-func runOnce(ctx context.Context, cfg config.Config, capt capture.Capturer, ana vision.Analyzer, log *slog.Logger, stdout, stderr io.Writer) int {
-	if err := checkFFmpeg(ctx, cfg.Capture.FFmpegPath); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return ExitGeneral
-	}
-	if err := requireDevices(ctx, capt); err != nil {
-		fmt.Fprintln(stderr, "error:", err)
-		return ExitNoDevice
-	}
-	if code := checkAPIKey(ctx, ana, log); code != ExitOK {
-		return code
-	}
-
-	runner := jobs.NewRunner(jobs.Options{
-		Capturer:      capt,
-		Analyzer:      ana,
-		Saver:         saverFor(cfg),
-		Timeout:       cfg.Timeout,
-		VisionTimeout: cfg.Vision.Timeout,
-		CacheTTL:      0, // one-shot mode never reuses answers
-		Log:           log,
-	})
-
-	out, err := runner.Run(ctx, jobs.Request{
-		Device: cfg.Capture.Device,
-		Prompt: cfg.Vision.UserPrompt,
-		Save:   cfg.Capture.SaveDir != "",
-	})
-	if err != nil {
-		log.Error("one-shot run failed", slog.String("err", err.Error()))
-		return jobErrExit(err)
-	}
-	fmt.Fprintln(stdout, out.Result.Answer)
-	if out.Result.SavedPath != "" {
-		log.Info("frame saved", slog.String("path", out.Result.SavedPath))
-	}
 	return ExitOK
 }
 
@@ -222,7 +180,7 @@ func runServe(ctx context.Context, cfg config.Config, capt capture.Capturer, ana
 		}
 	}()
 	log.Info("serving",
-		slog.String("addr", "http://"+cfg.Listen),
+		slog.String("addr", "http://"+ln.Addr().String()),
 		slog.String("model", cfg.Vision.Model),
 		slog.String("base_url", cfg.Vision.BaseURL),
 		slog.String("key", logx.MaskKey(cfg.Vision.APIKey)),
@@ -259,24 +217,6 @@ func cacheTTLFor(cfg config.Config) time.Duration {
 		return 0
 	}
 	return cacheTTL
-}
-
-// jobErrExit maps a job failure to its exit code: timeouts → 4,
-// vision/API failures → 3, everything else → 1.
-func jobErrExit(err error) int {
-	switch {
-	case errors.Is(err, capture.ErrTimeout),
-		errors.Is(err, context.DeadlineExceeded),
-		errors.Is(err, context.Canceled):
-		return ExitTimeout
-	case errors.Is(err, vision.ErrUnreadableImage),
-		errors.Is(err, vision.ErrNoAPIKey),
-		errors.Is(err, vision.ErrAuth),
-		errors.Is(err, vision.ErrUpstream):
-		return ExitAPI
-	default:
-		return ExitGeneral
-	}
 }
 
 // hasFlag reports whether argv contains --name or -name (value forms aside).

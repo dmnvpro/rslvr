@@ -29,20 +29,44 @@
     border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; font: inherit;
   }
   textarea { min-height: 70px; resize: vertical; }
-  #btn-shot {
-    width: 100%; margin-top: 18px; padding: 14px; font-size: 17px; font-weight: 600;
+  .actions { display: flex; gap: 10px; margin-top: 18px; }
+  .actions button {
+    flex: 1; padding: 14px; font-size: 17px; font-weight: 600;
     color: #fff; background: var(--accent); border: 0; border-radius: 10px; cursor: pointer;
   }
-  #btn-shot:disabled { opacity: .55; cursor: wait; }
-  #btn-shot kbd {
+  .actions button:disabled { opacity: .55; cursor: wait; }
+  .actions kbd {
     font: 12px ui-monospace, monospace; background: #ffffff26;
     padding: 1px 7px; border-radius: 5px; margin-left: 8px;
   }
+  #btn-newq {
+    margin-top: 10px; padding: 6px 14px; font-size: 13px; color: var(--muted);
+    background: none; border: 1px solid var(--line); border-radius: 8px; cursor: pointer;
+  }
+  #btn-newq:hover { color: var(--text); }
+  #pending-box { margin-top: 4px; }
+  .pending { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+  .thumb { position: relative; }
+  .thumb img { height: 64px; display: block; border-radius: 6px; border: 1px solid var(--line); }
+  .thumb .num {
+    position: absolute; top: 4px; left: 4px; padding: 0 6px; border-radius: 5px;
+    background: #000a; color: #fff; font: 11px ui-monospace, monospace;
+  }
+  .warn { color: #ffd166; }
   .card {
     margin-top: 18px; background: var(--card); border: 1px solid var(--line);
     border-radius: 12px; padding: 16px;
   }
   .answer { font-size: 19px; font-weight: 600; word-break: break-word; }
+  .q-text { font-size: 14px; margin-bottom: 6px; word-break: break-word; }
+  .options { list-style: none; margin: 0 0 10px; padding: 0; color: var(--muted); font-size: 13px; }
+  .options li { padding: 1px 0; word-break: break-word; }
+  .why { margin: 6px 0 0; font-size: 14px; white-space: pre-wrap; word-break: break-word; }
+  #btn-export {
+    padding: 8px 14px; font-size: 13px; font-weight: 600;
+    color: var(--text); background: var(--card); border: 1px solid var(--line);
+    border-radius: 8px; cursor: pointer;
+  }
   .meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 10px; color: var(--muted); font-size: 13px; }
   img.preview { max-height: 180px; max-width: 100%; border-radius: 8px; border: 1px solid var(--line); margin-top: 12px; }
   details { margin-top: 10px; }
@@ -71,10 +95,24 @@
   <label for="dev">Video device</label>
   <select id="dev"><option value="">Loading…</option></select>
 
-  <button id="btn-shot">Take screenshot<kbd>Space</kbd></button>
+  <div class="actions">
+    <button id="btn-shot">Take screenshot<kbd>Space</kbd></button>
+    <button id="btn-resolve" disabled>Resolve</button>
+  </div>
+  <button id="btn-newq" class="hidden">New question</button>
+
+  <div id="pending-box" class="hidden">
+    <div class="pending" id="pending"></div>
+    <div id="frames-warn" class="hint warn hidden">
+      5+ frames cost more tokens and may confuse the model — resolve when the whole question is captured.
+    </div>
+  </div>
 
   <div id="result" class="card hidden">
+    <div class="q-text hidden" id="question"></div>
+    <ul class="options hidden" id="options"></ul>
     <div class="answer" id="answer"></div>
+    <details id="why-box" class="hidden"><summary>Why this answer</summary><p class="why" id="explanation"></p></details>
     <div class="meta">
       <span id="m-model"></span>
       <span id="m-latency"></span>
@@ -94,17 +132,18 @@
     <label for="prompt-override">Prompt override (replaces the configured user prompt)</label>
     <textarea id="prompt-override" placeholder="Leave empty to use the configured prompt"></textarea>
     <div class="row">
-      <input type="checkbox" id="save-frame">
-      <label for="save-frame" style="margin:0">Save frame to disk (shots dir)</label>
+      <input type="checkbox" id="save-frame" checked>
+      <label for="save-frame" style="margin:0">Save frames to disk (shots dir)</label>
     </div>
   </details>
 
   <details id="history-box">
     <summary>History (<span id="history-count">0</span>)</summary>
     <div id="history"></div>
+    <div class="row"><button id="btn-export">Download history</button></div>
   </details>
 
-  <p class="hint">Requests are served by your local rslvr instance; only the captured frame leaves the machine (to the configured vision API).</p>
+  <p class="hint">Requests are served by your local rslvr instance; only the captured frames leave the machine (to the configured vision API).</p>
 </main>
 
 <script>
@@ -113,27 +152,33 @@
 const $ = (id) => document.getElementById(id);
 const STORAGE = { device: "rslvr.device", token: "rslvr.token" };
 const HISTORY_LIMIT = 10;
-const history = [];
+const FRAMES_WARN = 5;
+const historyLog = [];
+// Frames of the current question, in capture order:
+// {data, mime, sha256, preview, saved_path} as returned by POST /api/frame.
+let pending = [];
 
 // --- state machine: idle -> busy -> idle | error -------------------------
 let state = "idle";
-function setState(next) {
+function setState(next, busyLabel) {
   state = next;
-  const pill = $("pill"), btn = $("btn-shot");
-  btn.disabled = next === "busy";
-  pill.className = "pill" + (next === "busy" ? " busy" : next === "error" ? " err" : "");
-  pill.textContent = next === "busy" ? "Capturing…" : next === "error" ? "Error" : "Ready";
+  const pill = $("pill"), busy = next === "busy";
+  $("btn-shot").disabled = busy;
+  $("btn-resolve").disabled = busy || pending.length === 0;
+  $("btn-newq").disabled = busy;
+  pill.className = "pill" + (busy ? " busy" : next === "error" ? " err" : "");
+  pill.textContent = busy ? (busyLabel || "Working…") : next === "error" ? "Error" : "Ready";
   if (next !== "error") $("error").classList.add("hidden");
 }
 
 // --- auth token (optional, set when auth_token is configured) ------------
-const url = new URL(location.href);
-if (url.searchParams.has("token")) {
-  localStorage.setItem(STORAGE.token, url.searchParams.get("token"));
-  document.cookie = "rslvr_token=" + encodeURIComponent(url.searchParams.get("token")) +
+const pageUrl = new URL(location.href);
+if (pageUrl.searchParams.has("token")) {
+  localStorage.setItem(STORAGE.token, pageUrl.searchParams.get("token"));
+  document.cookie = "rslvr_token=" + encodeURIComponent(pageUrl.searchParams.get("token")) +
     "; path=/; max-age=604800; samesite=strict";
-  url.searchParams.delete("token");
-  history.replaceState(null, "", url.pathname + url.search);
+  pageUrl.searchParams.delete("token");
+  history.replaceState(null, "", pageUrl.pathname + pageUrl.search);
 }
 const token = () => localStorage.getItem(STORAGE.token) || "";
 
@@ -171,17 +216,70 @@ async function loadDevices() {
 }
 $("dev").addEventListener("change", () => localStorage.setItem(STORAGE.device, $("dev").value));
 
-// --- main action ----------------------------------------------------------
-async function shoot() {
+// --- capture --------------------------------------------------------------
+async function takeFrame() {
   if (state !== "idle") return;
-  setState("busy");
+  setState("busy", "Capturing…");
+  try {
+    const resp = await api("/api/frame", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        device: $("dev").value || null,
+        save: $("save-frame").checked,
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) {
+      const e = data.error || {};
+      throw Object.assign(new Error(e.message || "HTTP " + resp.status), { code: e.code });
+    }
+    pending.push(data);
+    renderPending();
+    setState("idle");
+  } catch (err) {
+    showError("Capture failed" + (err.code ? " (" + err.code + ")" : ""), err.message || String(err));
+    setState("error");
+  }
+}
+
+function renderPending() {
+  $("pending-box").classList.toggle("hidden", pending.length === 0);
+  $("pending").innerHTML = "";
+  pending.forEach((f, i) => {
+    const thumb = document.createElement("div");
+    thumb.className = "thumb";
+    const img = document.createElement("img");
+    img.src = f.preview;
+    img.alt = "frame " + (i + 1);
+    const num = document.createElement("span");
+    num.className = "num";
+    num.textContent = String(i + 1);
+    thumb.append(img, num);
+    $("pending").appendChild(thumb);
+  });
+  $("frames-warn").classList.toggle("hidden", pending.length < FRAMES_WARN);
+  $("btn-resolve").disabled = state !== "idle" || pending.length === 0;
+  $("btn-newq").classList.toggle("hidden", pending.length === 0);
+}
+
+function newQuestion() {
+  if (state !== "idle") return;
+  pending = [];
+  renderPending();
   $("result").classList.add("hidden");
   $("error").classList.add("hidden");
+}
+
+// --- resolve ----------------------------------------------------------------
+async function resolveQuestion() {
+  if (state !== "idle" || !pending.length) return;
+  setState("busy", "Resolving…");
+  $("result").classList.add("hidden");
   try {
     const body = {
-      device: $("dev").value || null,
+      frames: pending.map((f) => ({ data: f.data })),
       prompt_override: $("prompt-override").value || null,
-      save: $("save-frame").checked,
     };
     const resp = await api("/api/screenshot", {
       method: "POST",
@@ -193,37 +291,55 @@ async function shoot() {
       const e = data.error || {};
       throw Object.assign(new Error(e.message || "HTTP " + resp.status), { code: e.code });
     }
-    renderResult(data);
+    const shots = pending.map((f) => f.saved_path).filter(Boolean).join(", ");
+    const preview = pending[0].preview;
+    renderResult(data, preview, shots);
+    pending = []; // the question is answered; a fresh set starts now
+    renderPending();
     setState("idle");
   } catch (err) {
-    showError("Screenshot failed" + (err.code ? " (" + err.code + ")" : ""), err.message || String(err));
+    showError("Resolve failed" + (err.code ? " (" + err.code + ")" : ""), err.message || String(err));
     setState("error");
   }
 }
 
-function renderResult(data) {
+function renderResult(data, preview, shots) {
+  $("question").textContent = data.question || "";
+  $("question").classList.toggle("hidden", !data.question);
+  const opts = $("options");
+  opts.innerHTML = "";
+  opts.classList.toggle("hidden", !(data.options || []).length);
+  for (const o of data.options || []) {
+    const li = document.createElement("li");
+    li.textContent = o;
+    opts.appendChild(li);
+  }
   $("answer").textContent = data.answer || "(empty answer)";
+  $("explanation").textContent = data.explanation || "";
+  $("why-box").classList.toggle("hidden", !data.explanation);
   $("m-model").textContent = "model: " + (data.model || "?");
   $("m-latency").textContent = "latency: " + (data.latency_ms ?? "?") + " ms";
   $("m-usage").textContent = data.usage ? "tokens: " + data.usage.total_tokens : "";
   $("raw").textContent = data.raw || "";
   const img = $("preview");
-  if (data.preview) { img.src = data.preview; img.classList.remove("hidden"); }
+  if (preview) { img.src = preview; img.classList.remove("hidden"); }
   else { img.removeAttribute("src"); img.classList.add("hidden"); }
   $("result").classList.remove("hidden");
 
-  history.unshift({
-    answer: data.answer, model: data.model, latency_ms: data.latency_ms,
-    ts: new Date(), shot: data.saved_path || "",
+  historyLog.unshift({
+    answer: data.answer, question: data.question || "",
+    options: data.options || [], explanation: data.explanation || "",
+    model: data.model, latency_ms: data.latency_ms,
+    ts: new Date(), shot: shots || "",
   });
-  history.length = Math.min(history.length, HISTORY_LIMIT);
+  historyLog.length = Math.min(historyLog.length, HISTORY_LIMIT);
   renderHistory();
 }
 
 function renderHistory() {
-  $("history-count").textContent = history.length;
-  $("history-box").classList.toggle("hidden", history.length === 0);
-  $("history").innerHTML = history.map((h) => {
+  $("history-count").textContent = historyLog.length;
+  $("history-box").classList.toggle("hidden", historyLog.length === 0);
+  $("history").innerHTML = historyLog.map((h) => {
     const when = h.ts.toLocaleTimeString();
     return `<div class="history-item"><div class="h-answer"></div>` +
       `<div class="h-meta">${when} · ${h.model || "?"} · ${h.latency_ms ?? "?"} ms` +
@@ -231,7 +347,42 @@ function renderHistory() {
   }).join("");
   // answers are inserted via textContent to avoid HTML injection
   const items = $("history").querySelectorAll(".history-item");
-  items.forEach((el, i) => { el.querySelector(".h-answer").textContent = history[i].answer; });
+  items.forEach((el, i) => { el.querySelector(".h-answer").textContent = historyLog[i].answer; });
+}
+
+// --- history export --------------------------------------------------------
+function downloadHistory() {
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  const stamp = now.getFullYear() + "-" + pad(now.getMonth() + 1) + "-" + pad(now.getDate()) +
+    "_" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+  const rule = "─".repeat(48);
+  const label = (s) => s.padEnd(12);
+  const lines = [
+    `rslvr history — exported ${now.toLocaleString()} (${historyLog.length} entries)`,
+    rule,
+  ];
+  historyLog.forEach((h, i) => {
+    lines.push(`──── ${i + 1} ────`);
+    lines.push(label("time:") + h.ts.toLocaleTimeString());
+    if (h.question) lines.push(label("question:") + h.question);
+    if (h.options.length) {
+      lines.push("options:");
+      for (const o of h.options) lines.push("  - " + o);
+    }
+    lines.push(label("answer:") + h.answer);
+    if (h.explanation) lines.push(label("explanation:") + h.explanation);
+    lines.push(label("model:") + (h.model || "?"));
+    lines.push(label("latency:") + (h.latency_ms ?? "?") + " ms");
+    if (h.shot) lines.push(label("shot:") + h.shot);
+    lines.push(rule);
+  });
+  const blob = new Blob([lines.join("\n") + "\n"], { type: "text/plain;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `rslvr-history-${stamp}.txt`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 function showError(title, detail) {
@@ -241,7 +392,10 @@ function showError(title, detail) {
 }
 
 // --- wiring ----------------------------------------------------------------
-$("btn-shot").addEventListener("click", shoot);
+$("btn-shot").addEventListener("click", takeFrame);
+$("btn-resolve").addEventListener("click", resolveQuestion);
+$("btn-newq").addEventListener("click", newQuestion);
+$("btn-export").addEventListener("click", downloadHistory);
 
 document.addEventListener("keydown", (e) => {
   if (e.code !== "Space" || e.repeat || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -249,7 +403,7 @@ document.addEventListener("keydown", (e) => {
   if (t instanceof HTMLElement && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" ||
       t.tagName === "SELECT" || t.isContentEditable)) return;
   e.preventDefault(); // stop page scroll
-  shoot();
+  takeFrame();
 });
 
 loadDevices();
