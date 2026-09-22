@@ -47,7 +47,7 @@ A per-request replacement of the configured user prompt. The system prompt is ne
 _Avoid_: custom prompt
 
 **History**:
-The ordered list of Results from the current web-UI session — most recent first, capped, held only in the browser tab's memory and lost on page reload. Exported to a text file manually from the UI: downloaded to the client or written into the Shot directory on the server. Not a Cached Result: the cache reuses a Result by Frame hash, the History is a session log.
+The ordered list of Results from the current web-UI session — most recent first, uncapped, held only in the browser tab's memory and lost on page reload. Exported to a text file manually from the UI: downloaded to the client or written into the Shot directory on the server. Not a Cached Result: the cache reuses a Result by Frame hash, the History is a session log.
 _Avoid_: log, cache, report
 
 **Cached Result**:

@@ -155,7 +155,6 @@
 
 const $ = (id) => document.getElementById(id);
 const STORAGE = { device: "rslvr.device", token: "rslvr.token" };
-const HISTORY_LIMIT = 10;
 const FRAMES_WARN = 5;
 const historyLog = [];
 // Frames of the current question, in capture order:
@@ -346,7 +345,6 @@ function renderResult(data, preview, shots) {
     model: data.model, latency_ms: data.latency_ms,
     ts: new Date(), shot: shots || "",
   });
-  historyLog.length = Math.min(historyLog.length, HISTORY_LIMIT);
   renderHistory();
 }
 
